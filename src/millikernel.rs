@@ -313,6 +313,162 @@ const fn cplx_dot_plan_impl<const MR: usize, const NR: usize, const N: usize, M>
     }
 }
 
+pub const AVX_HEAD_MASK_F32: &[__m256i; 8] = &unsafe {
+    core::mem::transmute([
+        [-1, -1, -1, -1, -1, -1, -1, -1],
+        [0, -1, -1, -1, -1, -1, -1, -1],
+        [0, 0, -1, -1, -1, -1, -1, -1],
+        [0, 0, 0, -1, -1, -1, -1, -1],
+        [0, 0, 0, 0, -1, -1, -1, -1],
+        [0, 0, 0, 0, 0, -1, -1, -1],
+        [0, 0, 0, 0, 0, 0, -1, -1],
+        [0, 0, 0, 0, 0, 0, 0, -1i32],
+    ])
+};
+pub const AVX_TAIL_MASK_F32: &[__m256i; 8] = &unsafe {
+    core::mem::transmute([
+        [-1, -1, -1, -1, -1, -1, -1, -1],
+        [-1, -1, -1, -1, -1, -1, -1, 0],
+        [-1, -1, -1, -1, -1, -1, 0, 0],
+        [-1, -1, -1, -1, -1, 0, 0, 0],
+        [-1, -1, -1, -1, 0, 0, 0, 0],
+        [-1, -1, -1, 0, 0, 0, 0, 0],
+        [-1, -1, 0, 0, 0, 0, 0, 0],
+        [-1, 0, 0, 0, 0, 0, 0, 0i32],
+    ])
+};
+
+pub const AVX_HEAD_MASK_F64: &[__m256i; 4] = &unsafe {
+    core::mem::transmute([
+        [-1, -1, -1, -1],
+        [0, -1, -1, -1],
+        [0, 0, -1, -1],
+        [0, 0, 0, -1i64],
+    ])
+};
+pub const AVX_TAIL_MASK_F64: &[__m256i; 4] = &unsafe {
+    core::mem::transmute([
+        [-1, -1, -1, -1],
+        [-1, -1, -1, 0],
+        [-1, -1, 0, 0],
+        [-1, 0, 0, 0i64],
+    ])
+};
+
+pub const AVX_HEAD_MASK_C32: &[__m256i; 4] = &unsafe {
+    core::mem::transmute([
+        [-1, -1, -1, -1, -1, -1, -1, -1],
+        [0, 0, -1, -1, -1, -1, -1, -1],
+        [0, 0, 0, 0, -1, -1, -1, -1],
+        [0, 0, 0, 0, 0, 0, -1, -1i32],
+    ])
+};
+pub const AVX_TAIL_MASK_C32: &[__m256i; 4] = &unsafe {
+    core::mem::transmute([
+        [-1, -1, -1, -1, -1, -1, -1, -1],
+        [-1, -1, -1, -1, -1, -1, 0, 0],
+        [-1, -1, -1, -1, 0, 0, 0, 0],
+        [-1, -1, 0, 0, 0, 0, 0, 0i32],
+    ])
+};
+
+pub const AVX_HEAD_MASK_C64: &[__m256i; 2] =
+    &unsafe { core::mem::transmute([[-1, -1, -1, -1], [0, 0, -1, -1i64]]) };
+pub const AVX_TAIL_MASK_C64: &[__m256i; 2] =
+    &unsafe { core::mem::transmute([[-1, -1, -1, -1], [-1, -1, 0, 0i64]]) };
+
+pub const AVX512_HEAD_MASK_F32: &[u16; 16] = &[
+    0b1111111111111111, //
+    0b1111111111111110, //
+    0b1111111111111100, //
+    0b1111111111111000, //
+    0b1111111111110000, //
+    0b1111111111100000, //
+    0b1111111111000000, //
+    0b1111111110000000, //
+    0b1111111100000000, //
+    0b1111111000000000, //
+    0b1111110000000000, //
+    0b1111100000000000, //
+    0b1111000000000000, //
+    0b1110000000000000, //
+    0b1100000000000000, //
+    0b1000000000000000, //
+];
+pub const AVX512_TAIL_MASK_F32: &[u16; 16] = &[
+    0b1111111111111111, //
+    0b0111111111111111, //
+    0b0011111111111111, //
+    0b0001111111111111, //
+    0b0000111111111111, //
+    0b0000011111111111, //
+    0b0000001111111111, //
+    0b0000000111111111, //
+    0b0000000011111111, //
+    0b0000000001111111, //
+    0b0000000000111111, //
+    0b0000000000011111, //
+    0b0000000000001111, //
+    0b0000000000000111, //
+    0b0000000000000011, //
+    0b0000000000000001, //
+];
+
+pub const AVX512_HEAD_MASK_F64: &[u8; 8] = &[
+    0b11111111, //
+    0b11111110, //
+    0b11111100, //
+    0b11111000, //
+    0b11110000, //
+    0b11100000, //
+    0b11000000, //
+    0b10000000, //
+];
+pub const AVX512_TAIL_MASK_F64: &[u8; 8] = &[
+    0b11111111, //
+    0b01111111, //
+    0b00111111, //
+    0b00011111, //
+    0b00001111, //
+    0b00000111, //
+    0b00000011, //
+    0b00000001, //
+];
+
+pub const AVX512_HEAD_MASK_C32: &[u16; 8] = &[
+    0b1111111111111111, //
+    0b1111111111111100, //
+    0b1111111111110000, //
+    0b1111111111000000, //
+    0b1111111100000000, //
+    0b1111110000000000, //
+    0b1111000000000000, //
+    0b1100000000000000, //
+];
+pub const AVX512_TAIL_MASK_C32: &[u16; 8] = &[
+    0b1111111111111111, //
+    0b0011111111111111, //
+    0b0000111111111111, //
+    0b0000001111111111, //
+    0b0000000011111111, //
+    0b0000000000111111, //
+    0b0000000000001111, //
+    0b0000000000000011, //
+];
+
+pub const AVX512_HEAD_MASK_C64: &[u8; 4] = &[
+    0b11111111, //
+    0b11111100, //
+    0b11110000, //
+    0b11000000, //
+];
+pub const AVX512_TAIL_MASK_C64: &[u8; 4] = &[
+    0b11111111, //
+    0b00111111, //
+    0b00001111, //
+    0b00000011, //
+];
+
 #[inline]
 pub const fn f32_plan_avx(
     extra_masked_top_rows: usize,
@@ -320,40 +476,14 @@ pub const fn f32_plan_avx(
     ncols: usize,
     dst: Accum,
 ) -> Plan {
-    const N: usize = 32 / size_of::<f32>();
-    const HEAD_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1, -1, -1, -1, -1],
-            [0, -1, -1, -1, -1, -1, -1, -1],
-            [0, 0, -1, -1, -1, -1, -1, -1],
-            [0, 0, 0, -1, -1, -1, -1, -1],
-            [0, 0, 0, 0, -1, -1, -1, -1],
-            [0, 0, 0, 0, 0, -1, -1, -1],
-            [0, 0, 0, 0, 0, 0, -1, -1],
-            [0, 0, 0, 0, 0, 0, 0, -1i32],
-        ])
-    };
-    const TAIL_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1, -1, -1, -1, -1],
-            [-1, -1, -1, -1, -1, -1, -1, 0],
-            [-1, -1, -1, -1, -1, -1, 0, 0],
-            [-1, -1, -1, -1, -1, 0, 0, 0],
-            [-1, -1, -1, -1, 0, 0, 0, 0],
-            [-1, -1, -1, 0, 0, 0, 0, 0],
-            [-1, -1, 0, 0, 0, 0, 0, 0],
-            [-1, 0, 0, 0, 0, 0, 0, 0i32],
-        ])
-    };
-
     real_plan_impl(
         extra_masked_top_rows,
         nrows,
         ncols,
         dst,
         UKR_AVX_real_float32,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX_HEAD_MASK_F32,
+        AVX_TAIL_MASK_F32,
     )
 }
 
@@ -364,32 +494,14 @@ pub const fn f64_plan_avx(
     ncols: usize,
     dst: Accum,
 ) -> Plan {
-    const N: usize = 32 / size_of::<f64>();
-    const HEAD_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1],
-            [0, -1, -1, -1],
-            [0, 0, -1, -1],
-            [0, 0, 0, -1i64],
-        ])
-    };
-    const TAIL_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1],
-            [-1, -1, -1, 0],
-            [-1, -1, 0, 0],
-            [-1, 0, 0, 0i64],
-        ])
-    };
-
     real_plan_impl(
         extra_masked_top_rows,
         nrows,
         ncols,
         dst,
         UKR_AVX_real_float64,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX_HEAD_MASK_F64,
+        AVX_TAIL_MASK_F64,
     )
 }
 
@@ -402,24 +514,6 @@ pub const fn c32_plan_avx(
     conj_lhs: bool,
     conj_rhs: bool,
 ) -> Plan {
-    const N: usize = 32 / (2 * size_of::<f32>());
-    const HEAD_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1, -1, -1, -1, -1],
-            [0, 0, -1, -1, -1, -1, -1, -1],
-            [0, 0, 0, 0, -1, -1, -1, -1],
-            [0, 0, 0, 0, 0, 0, -1, -1i32],
-        ])
-    };
-    const TAIL_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1, -1, -1, -1, -1],
-            [-1, -1, -1, -1, -1, -1, 0, 0],
-            [-1, -1, -1, -1, 0, 0, 0, 0],
-            [-1, -1, 0, 0, 0, 0, 0, 0i32],
-        ])
-    };
-
     cplx_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -428,8 +522,8 @@ pub const fn c32_plan_avx(
         conj_lhs,
         conj_rhs,
         UKR_AVX_cplx_float32,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX_HEAD_MASK_C32,
+        AVX_TAIL_MASK_C32,
     )
 }
 
@@ -442,12 +536,6 @@ pub const fn c64_plan_avx(
     conj_lhs: bool,
     conj_rhs: bool,
 ) -> Plan {
-    const N: usize = 32 / (2 * size_of::<f64>());
-    const HEAD_MASK: &[__m256i; N] =
-        &unsafe { core::mem::transmute([[-1, -1, -1, -1], [0, 0, -1, -1i64]]) };
-    const TAIL_MASK: &[__m256i; N] =
-        &unsafe { core::mem::transmute([[-1, -1, -1, -1], [-1, -1, 0, 0i64]]) };
-
     cplx_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -456,8 +544,8 @@ pub const fn c64_plan_avx(
         conj_lhs,
         conj_rhs,
         UKR_AVX_cplx_float64,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX_HEAD_MASK_C64,
+        AVX_TAIL_MASK_C64,
     )
 }
 
@@ -468,52 +556,14 @@ pub const fn f32_plan_avx512(
     ncols: usize,
     dst: Accum,
 ) -> Plan {
-    const N: usize = 64 / size_of::<f32>();
-    const HEAD_MASK: &[u16; N] = &[
-        0b1111111111111111, //
-        0b1111111111111110, //
-        0b1111111111111100, //
-        0b1111111111111000, //
-        0b1111111111110000, //
-        0b1111111111100000, //
-        0b1111111111000000, //
-        0b1111111110000000, //
-        0b1111111100000000, //
-        0b1111111000000000, //
-        0b1111110000000000, //
-        0b1111100000000000, //
-        0b1111000000000000, //
-        0b1110000000000000, //
-        0b1100000000000000, //
-        0b1000000000000000, //
-    ];
-    const TAIL_MASK: &[u16; N] = &[
-        0b1111111111111111, //
-        0b0111111111111111, //
-        0b0011111111111111, //
-        0b0001111111111111, //
-        0b0000111111111111, //
-        0b0000011111111111, //
-        0b0000001111111111, //
-        0b0000000111111111, //
-        0b0000000011111111, //
-        0b0000000001111111, //
-        0b0000000000111111, //
-        0b0000000000011111, //
-        0b0000000000001111, //
-        0b0000000000000111, //
-        0b0000000000000011, //
-        0b0000000000000001, //
-    ];
-
     real_plan_impl(
         extra_masked_top_rows,
         nrows,
         ncols,
         dst,
         UKR_AVX512_real_float32,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX512_HEAD_MASK_F32,
+        AVX512_TAIL_MASK_F32,
     )
 }
 #[inline]
@@ -523,36 +573,14 @@ pub const fn f64_plan_avx512(
     ncols: usize,
     dst: Accum,
 ) -> Plan {
-    const N: usize = 64 / size_of::<f64>();
-    const HEAD_MASK: &[u8; N] = &[
-        0b11111111, //
-        0b11111110, //
-        0b11111100, //
-        0b11111000, //
-        0b11110000, //
-        0b11100000, //
-        0b11000000, //
-        0b10000000, //
-    ];
-    const TAIL_MASK: &[u8; N] = &[
-        0b11111111, //
-        0b01111111, //
-        0b00111111, //
-        0b00011111, //
-        0b00001111, //
-        0b00000111, //
-        0b00000011, //
-        0b00000001, //
-    ];
-
     real_plan_impl(
         extra_masked_top_rows,
         nrows,
         ncols,
         dst,
         UKR_AVX512_real_float64,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX512_HEAD_MASK_F64,
+        AVX512_TAIL_MASK_F64,
     )
 }
 
@@ -565,28 +593,6 @@ pub const fn c32_plan_avx512(
     conj_lhs: bool,
     conj_rhs: bool,
 ) -> Plan {
-    const N: usize = 64 / (2 * size_of::<f32>());
-    const HEAD_MASK: &[u16; N] = &[
-        0b1111111111111111, //
-        0b1111111111111100, //
-        0b1111111111110000, //
-        0b1111111111000000, //
-        0b1111111100000000, //
-        0b1111110000000000, //
-        0b1111000000000000, //
-        0b1100000000000000, //
-    ];
-    const TAIL_MASK: &[u16; N] = &[
-        0b1111111111111111, //
-        0b0011111111111111, //
-        0b0000111111111111, //
-        0b0000001111111111, //
-        0b0000000011111111, //
-        0b0000000000111111, //
-        0b0000000000001111, //
-        0b0000000000000011, //
-    ];
-
     cplx_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -595,8 +601,8 @@ pub const fn c32_plan_avx512(
         conj_lhs,
         conj_rhs,
         UKR_AVX512_cplx_float32,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX512_HEAD_MASK_C32,
+        AVX512_TAIL_MASK_C32,
     )
 }
 #[inline]
@@ -608,20 +614,6 @@ pub const fn c64_plan_avx512(
     conj_lhs: bool,
     conj_rhs: bool,
 ) -> Plan {
-    const N: usize = 64 / (2 * size_of::<f64>());
-    const HEAD_MASK: &[u8; N] = &[
-        0b11111111, //
-        0b11111100, //
-        0b11110000, //
-        0b11000000, //
-    ];
-    const TAIL_MASK: &[u8; N] = &[
-        0b11111111, //
-        0b00111111, //
-        0b00001111, //
-        0b00000011, //
-    ];
-
     cplx_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -630,8 +622,8 @@ pub const fn c64_plan_avx512(
         conj_lhs,
         conj_rhs,
         UKR_AVX512_cplx_float64,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX512_HEAD_MASK_C64,
+        AVX512_TAIL_MASK_C64,
     )
 }
 
@@ -643,32 +635,6 @@ pub const fn f32_dot_plan_avx(
     rhs_ncols: usize,
     dst: Accum,
 ) -> Plan {
-    const N: usize = 32 / size_of::<f32>();
-    const HEAD_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1, -1, -1, -1, -1],
-            [0, -1, -1, -1, -1, -1, -1, -1],
-            [0, 0, -1, -1, -1, -1, -1, -1],
-            [0, 0, 0, -1, -1, -1, -1, -1],
-            [0, 0, 0, 0, -1, -1, -1, -1],
-            [0, 0, 0, 0, 0, -1, -1, -1],
-            [0, 0, 0, 0, 0, 0, -1, -1],
-            [0, 0, 0, 0, 0, 0, 0, -1i32],
-        ])
-    };
-    const TAIL_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1, -1, -1, -1, -1],
-            [-1, -1, -1, -1, -1, -1, -1, 0],
-            [-1, -1, -1, -1, -1, -1, 0, 0],
-            [-1, -1, -1, -1, -1, 0, 0, 0],
-            [-1, -1, -1, -1, 0, 0, 0, 0],
-            [-1, -1, -1, 0, 0, 0, 0, 0],
-            [-1, -1, 0, 0, 0, 0, 0, 0],
-            [-1, 0, 0, 0, 0, 0, 0, 0i32],
-        ])
-    };
-
     real_dot_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -676,8 +642,8 @@ pub const fn f32_dot_plan_avx(
         rhs_ncols,
         dst,
         HKR_AVX_real_float32,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX_HEAD_MASK_F32,
+        AVX_TAIL_MASK_F32,
     )
 }
 #[inline]
@@ -688,24 +654,6 @@ pub const fn f64_dot_plan_avx(
     rhs_ncols: usize,
     dst: Accum,
 ) -> Plan {
-    const N: usize = 32 / size_of::<f64>();
-    const HEAD_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1],
-            [0, -1, -1, -1],
-            [0, 0, -1, -1],
-            [0, 0, 0, -1i64],
-        ])
-    };
-    const TAIL_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1],
-            [-1, -1, -1, 0],
-            [-1, -1, 0, 0],
-            [-1, 0, 0, 0i64],
-        ])
-    };
-
     real_dot_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -713,8 +661,8 @@ pub const fn f64_dot_plan_avx(
         rhs_ncols,
         dst,
         HKR_AVX_real_float64,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX_HEAD_MASK_F64,
+        AVX_TAIL_MASK_F64,
     )
 }
 #[inline]
@@ -727,24 +675,6 @@ pub const fn c32_dot_plan_avx(
     conj_lhs: bool,
     conj_rhs: bool,
 ) -> Plan {
-    const N: usize = 32 / (2 * size_of::<f32>());
-    const HEAD_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1, -1, -1, -1, -1],
-            [0, 0, -1, -1, -1, -1, -1, -1],
-            [0, 0, 0, 0, -1, -1, -1, -1],
-            [0, 0, 0, 0, 0, 0, -1, -1i32],
-        ])
-    };
-    const TAIL_MASK: &[__m256i; N] = &unsafe {
-        core::mem::transmute([
-            [-1, -1, -1, -1, -1, -1, -1, -1],
-            [-1, -1, -1, -1, -1, -1, 0, 0],
-            [-1, -1, -1, -1, 0, 0, 0, 0],
-            [-1, -1, 0, 0, 0, 0, 0, 0i32],
-        ])
-    };
-
     cplx_dot_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -754,8 +684,8 @@ pub const fn c32_dot_plan_avx(
         conj_lhs,
         conj_rhs,
         HKR_AVX_cplx_float32,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX_HEAD_MASK_C32,
+        AVX_TAIL_MASK_C32,
     )
 }
 #[inline]
@@ -768,12 +698,6 @@ pub const fn c64_dot_plan_avx(
     conj_lhs: bool,
     conj_rhs: bool,
 ) -> Plan {
-    const N: usize = 32 / (2 * size_of::<f64>());
-    const HEAD_MASK: &[__m256i; N] =
-        &unsafe { core::mem::transmute([[-1, -1, -1, -1], [0, 0, -1, -1i64]]) };
-    const TAIL_MASK: &[__m256i; N] =
-        &unsafe { core::mem::transmute([[-1, -1, -1, -1], [-1, -1, 0, 0i64]]) };
-
     cplx_dot_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -783,8 +707,8 @@ pub const fn c64_dot_plan_avx(
         conj_lhs,
         conj_rhs,
         HKR_AVX_cplx_float64,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX_HEAD_MASK_C64,
+        AVX_TAIL_MASK_C64,
     )
 }
 #[inline]
@@ -795,44 +719,6 @@ pub const fn f32_dot_plan_avx512(
     rhs_ncols: usize,
     dst: Accum,
 ) -> Plan {
-    const N: usize = 64 / size_of::<f32>();
-    const HEAD_MASK: &[u16; N] = &[
-        0b1111111111111111, //
-        0b1111111111111110, //
-        0b1111111111111100, //
-        0b1111111111111000, //
-        0b1111111111110000, //
-        0b1111111111100000, //
-        0b1111111111000000, //
-        0b1111111110000000, //
-        0b1111111100000000, //
-        0b1111111000000000, //
-        0b1111110000000000, //
-        0b1111100000000000, //
-        0b1111000000000000, //
-        0b1110000000000000, //
-        0b1100000000000000, //
-        0b1000000000000000, //
-    ];
-    const TAIL_MASK: &[u16; N] = &[
-        0b1111111111111111, //
-        0b0111111111111111, //
-        0b0011111111111111, //
-        0b0001111111111111, //
-        0b0000111111111111, //
-        0b0000011111111111, //
-        0b0000001111111111, //
-        0b0000000111111111, //
-        0b0000000011111111, //
-        0b0000000001111111, //
-        0b0000000000111111, //
-        0b0000000000011111, //
-        0b0000000000001111, //
-        0b0000000000000111, //
-        0b0000000000000011, //
-        0b0000000000000001, //
-    ];
-
     real_dot_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -840,8 +726,8 @@ pub const fn f32_dot_plan_avx512(
         rhs_ncols,
         dst,
         HKR_AVX512_real_float32,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX512_HEAD_MASK_F32,
+        AVX512_TAIL_MASK_F32,
     )
 }
 #[inline]
@@ -852,28 +738,6 @@ pub const fn f64_dot_plan_avx512(
     rhs_ncols: usize,
     dst: Accum,
 ) -> Plan {
-    const N: usize = 64 / size_of::<f64>();
-    const HEAD_MASK: &[u8; N] = &[
-        0b11111111, //
-        0b11111110, //
-        0b11111100, //
-        0b11111000, //
-        0b11110000, //
-        0b11100000, //
-        0b11000000, //
-        0b10000000, //
-    ];
-    const TAIL_MASK: &[u8; N] = &[
-        0b11111111, //
-        0b01111111, //
-        0b00111111, //
-        0b00011111, //
-        0b00001111, //
-        0b00000111, //
-        0b00000011, //
-        0b00000001, //
-    ];
-
     real_dot_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -881,8 +745,8 @@ pub const fn f64_dot_plan_avx512(
         rhs_ncols,
         dst,
         HKR_AVX512_real_float64,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX512_HEAD_MASK_F64,
+        AVX512_TAIL_MASK_F64,
     )
 }
 
@@ -896,28 +760,6 @@ pub const fn c32_dot_plan_avx512(
     conj_lhs: bool,
     conj_rhs: bool,
 ) -> Plan {
-    const N: usize = 64 / (2 * size_of::<f32>());
-    const HEAD_MASK: &[u16; N] = &[
-        0b1111111111111111, //
-        0b1111111111111100, //
-        0b1111111111110000, //
-        0b1111111111000000, //
-        0b1111111100000000, //
-        0b1111110000000000, //
-        0b1111000000000000, //
-        0b1100000000000000, //
-    ];
-    const TAIL_MASK: &[u16; N] = &[
-        0b1111111111111111, //
-        0b0011111111111111, //
-        0b0000111111111111, //
-        0b0000001111111111, //
-        0b0000000011111111, //
-        0b0000000000111111, //
-        0b0000000000001111, //
-        0b0000000000000011, //
-    ];
-
     cplx_dot_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -927,8 +769,8 @@ pub const fn c32_dot_plan_avx512(
         conj_lhs,
         conj_rhs,
         HKR_AVX512_cplx_float32,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX512_HEAD_MASK_C32,
+        AVX512_TAIL_MASK_C32,
     )
 }
 #[inline]
@@ -941,20 +783,6 @@ pub const fn c64_dot_plan_avx512(
     conj_lhs: bool,
     conj_rhs: bool,
 ) -> Plan {
-    const N: usize = 64 / (2 * size_of::<f64>());
-    const HEAD_MASK: &[u8; N] = &[
-        0b11111111, //
-        0b11111100, //
-        0b11110000, //
-        0b11000000, //
-    ];
-    const TAIL_MASK: &[u8; N] = &[
-        0b11111111, //
-        0b00111111, //
-        0b00001111, //
-        0b00000011, //
-    ];
-
     cplx_dot_plan_impl(
         extra_masked_top_rows,
         nrows,
@@ -964,8 +792,8 @@ pub const fn c64_dot_plan_avx512(
         conj_lhs,
         conj_rhs,
         HKR_AVX512_cplx_float64,
-        HEAD_MASK,
-        TAIL_MASK,
+        AVX512_HEAD_MASK_C64,
+        AVX512_TAIL_MASK_C64,
     )
 }
 pub unsafe fn millikernel(
