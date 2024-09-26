@@ -1,39 +1,65 @@
 use std::{env, fmt::Write, fs, path::Path};
 
 #[derive(Copy, Clone)]
-pub enum Dtype {
+pub enum DType {
     F64,
     F32,
 }
 
-impl std::fmt::Debug for Dtype {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+#[derive(Copy, Clone)]
+pub enum Domain {
+    Real,
+    Cplx,
+}
+
+impl DType {
+    fn size(&self) -> i32 {
         match self {
-            Dtype::F64 => f.write_str("float64"),
-            Dtype::F32 => f.write_str("float32"),
+            DType::F64 => 8,
+            DType::F32 => 4,
         }
     }
 }
 
-impl std::fmt::Display for Dtype {
+impl std::fmt::Debug for Domain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Dtype::F64 => f.write_str("d"),
-            Dtype::F32 => f.write_str("s"),
+            Domain::Real => f.write_str("real"),
+            Domain::Cplx => f.write_str("cplx"),
+        }
+    }
+}
+
+impl std::fmt::Debug for DType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DType::F64 => f.write_str("float64"),
+            DType::F32 => f.write_str("float32"),
+        }
+    }
+}
+
+impl std::fmt::Display for DType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DType::F64 => f.write_str("d"),
+            DType::F32 => f.write_str("s"),
         }
     }
 }
 
 use x86_64::{RealAvx, RealAvx512};
 pub mod x86_64 {
+    use crate::{DType, Domain};
     use std::fmt::Write;
 
-    use crate::Dtype;
-
-    pub struct RealAvx(pub String, pub Dtype);
-    pub struct RealAvx512(pub String, pub Dtype);
+    pub struct RealAvx(pub String, pub DType, pub Domain);
+    pub struct RealAvx512(pub String, pub DType, pub Domain);
 
     impl KernelCtx for RealAvx {
+        fn vreg(&self) -> &'static str {
+            "ymm"
+        }
         fn has_bitmask(&self) -> bool {
             false
         }
@@ -46,6 +72,20 @@ pub mod x86_64 {
         }
         fn reg_size(&self) -> i32 {
             32
+        }
+        fn unit_size(&self) -> i32 {
+            self.1.size()
+        }
+        fn is_cplx(&self) -> bool {
+            matches!(self.2, Domain::Cplx)
+        }
+        fn vswap(&mut self, xmm: usize) {
+            let dtype = self.1;
+            let bits = match dtype {
+                DType::F64 => 0b01010101,
+                DType::F32 => 0b10110001,
+            };
+            writeln!(self.0, "vpermilp{dtype} ymm{xmm}, ymm{xmm}, {bits}").unwrap();
         }
         fn vload(&mut self, xmm: usize, mem: Mem) {
             let dtype = self.1;
@@ -61,11 +101,23 @@ pub mod x86_64 {
         }
         fn vfmadd(&mut self, acc: usize, lhs: usize, rhs: usize) {
             let dtype = self.1;
-            writeln!(self.0, "vfmadd231p{dtype} ymm{acc}, ymm{lhs}, ymm{rhs}").unwrap();
+            let instr = match self.2 {
+                Domain::Real => "add",
+                Domain::Cplx => "subadd",
+            };
+            writeln!(self.0, "vfm{instr}231p{dtype} ymm{acc}, ymm{lhs}, ymm{rhs}").unwrap();
+        }
+        fn vfmadd_conj(&mut self, acc: usize, lhs: usize, rhs: usize) {
+            let dtype = self.1;
+            writeln!(self.0, "vfmaddsub231p{dtype} ymm{acc}, ymm{lhs}, ymm{rhs}").unwrap();
         }
         fn vmul(&mut self, dst: usize, lhs: usize, rhs: usize) {
             let dtype = self.1;
             writeln!(self.0, "vmulp{dtype} ymm{dst}, ymm{lhs}, ymm{rhs}").unwrap();
+        }
+        fn vadd(&mut self, dst: usize, lhs: usize, rhs: usize) {
+            let dtype = self.1;
+            writeln!(self.0, "vaddp{dtype} ymm{dst}, ymm{lhs}, ymm{rhs}").unwrap();
         }
         fn vload_mask(&mut self, mask: usize, mem: Mem) {
             let dtype = self.1;
@@ -86,6 +138,10 @@ pub mod x86_64 {
         fn vzero(&mut self, xmm: usize) {
             let dtype = self.1;
             writeln!(self.0, "vxorp{dtype} ymm{xmm}, ymm{xmm}, ymm{xmm}").unwrap();
+        }
+        fn vxor(&mut self, dst: usize, src: usize) {
+            let dtype = self.1;
+            writeln!(self.0, "vxorp{dtype} ymm{dst}, ymm{dst}, ymm{src}").unwrap();
         }
         fn vmov(&mut self, dst: usize, src: usize) {
             let dtype = self.1;
@@ -123,6 +179,10 @@ pub mod x86_64 {
     }
 
     impl KernelCtx for RealAvx512 {
+        fn vreg(&self) -> &'static str {
+            "zmm"
+        }
+
         fn has_bitmask(&self) -> bool {
             true
         }
@@ -135,6 +195,20 @@ pub mod x86_64 {
         }
         fn reg_size(&self) -> i32 {
             64
+        }
+        fn unit_size(&self) -> i32 {
+            self.1.size()
+        }
+        fn is_cplx(&self) -> bool {
+            matches!(self.2, Domain::Cplx)
+        }
+        fn vswap(&mut self, xmm: usize) {
+            let dtype = self.1;
+            let bits = match dtype {
+                DType::F64 => 0b01010101,
+                DType::F32 => 0b10110001,
+            };
+            writeln!(self.0, "vpermilp{dtype} zmm{xmm}, zmm{xmm}, {bits}").unwrap();
         }
         fn vload(&mut self, xmm: usize, mem: Mem) {
             let dtype = self.1;
@@ -150,23 +224,35 @@ pub mod x86_64 {
         }
         fn vfmadd(&mut self, acc: usize, lhs: usize, rhs: usize) {
             let dtype = self.1;
-            writeln!(self.0, "vfmadd231p{dtype} zmm{acc}, zmm{lhs}, zmm{rhs}").unwrap();
+            let instr = match self.2 {
+                Domain::Real => "add",
+                Domain::Cplx => "subadd",
+            };
+            writeln!(self.0, "vfm{instr}231p{dtype} zmm{acc}, zmm{lhs}, zmm{rhs}").unwrap();
+        }
+        fn vfmadd_conj(&mut self, acc: usize, lhs: usize, rhs: usize) {
+            let dtype = self.1;
+            writeln!(self.0, "vfmaddsub231p{dtype} zmm{acc}, zmm{lhs}, zmm{rhs}").unwrap();
         }
         fn vmul(&mut self, dst: usize, lhs: usize, rhs: usize) {
             let dtype = self.1;
             writeln!(self.0, "vmulp{dtype} zmm{dst}, zmm{lhs}, zmm{rhs}").unwrap();
         }
+        fn vadd(&mut self, dst: usize, lhs: usize, rhs: usize) {
+            let dtype = self.1;
+            writeln!(self.0, "vaddp{dtype} zmm{dst}, zmm{lhs}, zmm{rhs}").unwrap();
+        }
         fn vload_mask(&mut self, mask: usize, mem: Mem) {
             let dtype = match self.1 {
-                Dtype::F64 => "b",
-                Dtype::F32 => "w",
+                DType::F64 => "b",
+                DType::F32 => "w",
             };
             writeln!(self.0, "kmov{dtype} k{mask}, {mem}").unwrap();
         }
         fn vand_mask(&mut self, dst: usize, src: usize) {
             let dtype = match self.1 {
-                Dtype::F64 => "b",
-                Dtype::F32 => "w",
+                DType::F64 => "b",
+                DType::F32 => "w",
             };
             writeln!(self.0, "kand{dtype} k{dst}, k{dst}, k{src}").unwrap();
         }
@@ -185,6 +271,10 @@ pub mod x86_64 {
         fn vzero(&mut self, xmm: usize) {
             let dtype = self.1;
             writeln!(self.0, "vxorp{dtype} zmm{xmm}, zmm{xmm}, zmm{xmm}").unwrap();
+        }
+        fn vxor(&mut self, dst: usize, src: usize) {
+            let dtype = self.1;
+            writeln!(self.0, "vxorp{dtype} zmm{dst}, zmm{dst}, zmm{src}").unwrap();
         }
         fn vmov(&mut self, dst: usize, src: usize) {
             let dtype = self.1;
@@ -295,6 +385,9 @@ pub mod x86_64 {
 
         fn n_regs(&self) -> usize;
         fn reg_size(&self) -> i32;
+        fn unit_size(&self) -> i32;
+        fn is_cplx(&self) -> bool;
+        fn vreg(&self) -> &'static str;
 
         fn push(&mut self, reg: Reg) {
             self.writeln(&format!("push {reg}"));
@@ -344,11 +437,14 @@ pub mod x86_64 {
             if_false: &mut dyn FnMut(&mut dyn KernelCtx),
         );
 
+        fn vswap(&mut self, xmm: usize);
         fn vload(&mut self, xmm: usize, mem: Mem);
         fn vstore(&mut self, mem: Mem, xmm: usize);
         fn vbroadcast(&mut self, xmm: usize, mem: Mem);
         fn vfmadd(&mut self, acc: usize, lhs: usize, rhs: usize);
+        fn vfmadd_conj(&mut self, acc: usize, lhs: usize, rhs: usize);
         fn vmul(&mut self, dst: usize, lhs: usize, rhs: usize);
+        fn vadd(&mut self, dst: usize, lhs: usize, rhs: usize);
 
         fn vload_mask(&mut self, mask: usize, mem: Mem);
         fn vand_mask(&mut self, dst: usize, src: usize);
@@ -356,6 +452,7 @@ pub mod x86_64 {
         fn vmaskstore(&mut self, mask: usize, mem: Mem, xmm: usize);
 
         fn vzero(&mut self, xmm: usize);
+        fn vxor(&mut self, dst: usize, src: usize);
         fn vmov(&mut self, dst: usize, src: usize);
     }
 
@@ -397,6 +494,7 @@ pub mod x86_64 {
                 )
             },
         );
+        ctx.vzeroupper();
         ctx.ret();
     }
 
@@ -434,8 +532,8 @@ pub mod x86_64 {
 
         assert!(m <= 2);
 
-        let tmp0 = Reg::R12;
-        let tmp1 = Reg::R13;
+        let tmp0 = Reg::R13;
+        let tmp1 = Reg::R14;
 
         ctx.push(tmp0);
         ctx.push(tmp1);
@@ -483,6 +581,9 @@ pub mod x86_64 {
             ctx.vand_mask(top_mask, bot_mask);
         }
 
+        let nbits = ctx.unit_size() * 8;
+        let vreg = ctx.vreg();
+
         ctx.push(DEPTH);
         ctx.push(LHS_PTR);
         ctx.push(RHS_PTR);
@@ -493,7 +594,7 @@ pub mod x86_64 {
 
             setup_cs(ctx, tmp, RHS_CS);
 
-            ctx.loop_(0, DEPTH, &mut |ctx| {
+            let body = |ctx: &mut dyn KernelCtx, conj: bool| {
                 let rhs = m * n + m;
 
                 for i in 0..m {
@@ -544,7 +645,46 @@ pub mod x86_64 {
 
                     for i in 0..m {
                         let lhs = i + m * n;
-                        ctx.vfmadd(i + m * j, lhs, rhs);
+                        if conj {
+                            ctx.vfmadd_conj(i + m * j, lhs, rhs);
+                        } else {
+                            ctx.vfmadd(i + m * j, lhs, rhs);
+                        }
+                    }
+                }
+
+                if ctx.is_cplx() {
+                    for i in 0..m {
+                        let lhs = i + m * n;
+                        ctx.vswap(lhs);
+                    }
+
+                    for j in 0..n {
+                        let addr = tmp[j / 3];
+                        let (index, scale) = match j % 3 {
+                            0 => (None, 0),
+                            1 => (Some(RHS_CS), 1),
+                            2 => (Some(RHS_CS), 2),
+                            _ => unreachable!(),
+                        };
+
+                        let mem = Mem {
+                            addr,
+                            index,
+                            scale,
+                            offset: ctx.unit_size(),
+                        };
+                        ctx.vbroadcast(rhs, mem);
+                        // ctx.writeln("int3");
+
+                        for i in 0..m {
+                            let lhs = i + m * n;
+                            if conj {
+                                ctx.vfmadd_conj(i + m * j, lhs, rhs);
+                            } else {
+                                ctx.vfmadd(i + m * j, lhs, rhs);
+                            }
+                        }
                     }
                 }
 
@@ -552,7 +692,50 @@ pub mod x86_64 {
                 for tmp in tmp {
                     ctx.add(*tmp, RHS_RS);
                 }
-            });
+            };
+
+            if ctx.is_cplx() {
+                let sign = m * n + m;
+                ctx.branch_bit(
+                    1,
+                    3,
+                    FLAGS,
+                    &mut |ctx| {
+                        ctx.loop_(0, DEPTH, &mut |ctx| {
+                            body(ctx, true);
+
+                            ctx.writeln(&format!(
+                                "vmovupd {vreg}{sign}, [rip + LIBFAER_GEMM_COMPLEX{nbits}_MASK_REAL]"
+                            ));
+                        })
+                    },
+                    &mut |ctx| {
+                        ctx.loop_(0, DEPTH, &mut |ctx| {
+                            body(ctx, false);
+                            ctx.vzero(sign);
+                        })
+                    },
+                );
+
+                ctx.branch_bit(
+                    1,
+                    4,
+                    FLAGS,
+                    &mut |ctx| {
+                        ctx.writeln(&format!(
+                            "vorpd {vreg}{sign}, {vreg}{sign}, [rip + LIBFAER_GEMM_COMPLEX{nbits}_MASK_IMAG]"
+                        ));
+                    },
+                    &mut |_| {},
+                );
+
+                // ctx.writeln("int3");
+                for i in 0..m * n {
+                    ctx.vxor(i, sign);
+                }
+            } else {
+                ctx.loop_(0, DEPTH, &mut |ctx| body(ctx, false));
+            }
 
             if n >= 9 {
                 ctx.pop(DST_PTR);
@@ -564,7 +747,45 @@ pub mod x86_64 {
         setup_cs(ctx, tmp, DST_CS);
 
         let alpha = m * n;
+        let alpha_imag = m * n + 1;
         let dst = m * n + 2;
+        ctx.vbroadcast(
+            alpha,
+            Mem {
+                addr: ALPHA_PTR,
+                index: None,
+                scale: 0,
+                offset: 0,
+            },
+        );
+
+        if ctx.is_cplx() {
+            ctx.vbroadcast(
+                alpha_imag,
+                Mem {
+                    addr: ALPHA_PTR,
+                    index: None,
+                    scale: 0,
+                    offset: ctx.unit_size(),
+                },
+            );
+
+            for i in 0..m * n {
+                ctx.vzero(dst);
+                ctx.vfmadd_conj(dst, i, alpha);
+                ctx.vswap(i);
+                ctx.vfmadd_conj(dst, i, alpha_imag);
+                ctx.vmov(i, dst);
+            }
+
+            let sign = dst;
+            ctx.writeln(&format!(
+                "vmovupd {vreg}{sign}, [rip + LIBFAER_GEMM_COMPLEX{nbits}_MASK_REAL]"
+            ));
+            for i in 0..m * n {
+                ctx.vxor(i, sign);
+            }
+        }
 
         if use_bot_mask && !ctx.has_bitmask() && bot_mask == m * n + 1 {
             ctx.vload_mask(
@@ -575,16 +796,6 @@ pub mod x86_64 {
                 },
             );
         }
-
-        ctx.vbroadcast(
-            alpha,
-            Mem {
-                addr: ALPHA_PTR,
-                index: None,
-                scale: 0,
-                offset: 0,
-            },
-        );
 
         let update = |ctx: &mut dyn KernelCtx, load: bool| {
             for j in 0..n {
@@ -614,9 +825,15 @@ pub mod x86_64 {
                         } else {
                             ctx.vload(dst, mem);
                         }
-                        ctx.vfmadd(dst, i + m * j, alpha);
-                    } else {
+                        if ctx.is_cplx() {
+                            ctx.vadd(dst, dst, i + m * j);
+                        } else {
+                            ctx.vfmadd(dst, i + m * j, alpha);
+                        }
+                    } else if !ctx.is_cplx() {
                         ctx.vmul(dst, i + m * j, alpha);
+                    } else {
+                        ctx.vmov(dst, i + m * j);
                     }
 
                     if use_top_mask && i == 0 {
@@ -628,7 +845,6 @@ pub mod x86_64 {
                     }
                 }
             }
-            // ctx.writeln("ud2");
         };
 
         ctx.branch_bit(
@@ -651,85 +867,87 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut codegen = String::new();
     let mut bindings = String::new();
 
-    for dtype in [Dtype::F32, Dtype::F64] {
-        // avx
-        {
-            let max_n = 6;
-            let max_m = 2;
+    for domain in [Domain::Real, Domain::Cplx] {
+        for dtype in [DType::F32, DType::F64] {
+            // avx
+            {
+                let max_n = 6;
+                let max_m = 2;
 
-            writeln!(bindings, "extern {{")?;
-            let mut names = vec![];
-            for j in 0..max_n {
-                let n = j + 1;
-                for i in 0..max_m {
-                    let m = i + 1;
+                writeln!(bindings, "extern {{")?;
+                let mut names = vec![];
+                for j in 0..max_n {
+                    let n = j + 1;
+                    for i in 0..max_m {
+                        let m = i + 1;
 
-                    let name = format!("libfaer_gemm_{dtype:?}_avx_{m}x{n}");
-                    writeln!(codegen, ".globl {name}")?;
-                    writeln!(codegen, "{name}:")?;
+                        let name = format!("libfaer_gemm_{domain:?}_{dtype:?}_avx_{m}x{n}");
+                        writeln!(codegen, ".globl {name}")?;
+                        writeln!(codegen, "{name}:")?;
 
-                    let mut ctx = RealAvx(String::new(), Dtype::F64);
-                    x86_64::microkernel(&mut ctx, m, n);
-                    writeln!(codegen, "{}", ctx.0)?;
-                    writeln!(bindings, "pub fn {name}();")?;
-                    names.push(name);
+                        let mut ctx = RealAvx(String::new(), dtype, domain);
+                        x86_64::microkernel(&mut ctx, m, n);
+                        writeln!(codegen, "{}", ctx.0)?;
+                        writeln!(bindings, "pub fn {name}();")?;
+                        names.push(name);
+                    }
                 }
-            }
 
-            writeln!(bindings, "}}")?;
-            writeln!(
-                bindings,
-                "pub const UKR_AVX_{dtype:?}: &[[unsafe extern fn(); {max_m}]; {max_n}] = &"
-            )?;
-            writeln!(bindings, "[")?;
-            for n in 0..max_n {
+                writeln!(bindings, "}}")?;
+                writeln!(
+                    bindings,
+                    "#[allow(non_upper_case_globals)] pub const UKR_AVX_{domain:?}_{dtype:?}: &[[unsafe extern fn(); {max_m}]; {max_n}] = &"
+                )?;
                 writeln!(bindings, "[")?;
-                for m in 0..max_m {
-                    writeln!(bindings, "{},", names[m + max_m * n])?;
+                for n in 0..max_n {
+                    writeln!(bindings, "[")?;
+                    for m in 0..max_m {
+                        writeln!(bindings, "{},", names[m + max_m * n])?;
+                    }
+                    writeln!(bindings, "],")?;
                 }
-                writeln!(bindings, "],")?;
-            }
-            writeln!(bindings, "];")?;
-        }
-
-        // avx512
-        {
-            let max_n = 12;
-            let max_m = 2;
-
-            writeln!(bindings, "extern {{")?;
-            let mut names = vec![];
-            for j in 0..max_n {
-                let n = j + 1;
-                for i in 0..max_m {
-                    let m = i + 1;
-
-                    let name = format!("libfaer_gemm_{dtype:?}_avx512_{m}x{n}");
-                    writeln!(codegen, ".globl {name}")?;
-                    writeln!(codegen, "{name}:")?;
-
-                    let mut ctx = RealAvx512(String::new(), Dtype::F64);
-                    x86_64::microkernel(&mut ctx, m, n);
-                    writeln!(codegen, "{}", ctx.0)?;
-                    writeln!(bindings, "pub fn {name}();")?;
-                    names.push(name);
-                }
+                writeln!(bindings, "];")?;
             }
 
-            writeln!(bindings, "}}")?;
-            writeln!(
-                bindings,
-                "pub const UKR_AVX512_{dtype:?}: &[[unsafe extern fn(); {max_m}]; {max_n}] = &"
-            )?;
-            writeln!(bindings, "[")?;
-            for n in 0..max_n {
+            // avx512
+            {
+                let max_n = 12;
+                let max_m = 2;
+
+                writeln!(bindings, "extern {{")?;
+                let mut names = vec![];
+                for j in 0..max_n {
+                    let n = j + 1;
+                    for i in 0..max_m {
+                        let m = i + 1;
+
+                        let name = format!("libfaer_gemm_{domain:?}_{dtype:?}_avx512_{m}x{n}");
+                        writeln!(codegen, ".globl {name}")?;
+                        writeln!(codegen, "{name}:")?;
+
+                        let mut ctx = RealAvx512(String::new(), dtype, domain);
+                        x86_64::microkernel(&mut ctx, m, n);
+                        writeln!(codegen, "{}", ctx.0)?;
+                        writeln!(bindings, "pub fn {name}();")?;
+                        names.push(name);
+                    }
+                }
+
+                writeln!(bindings, "}}")?;
+                writeln!(
+                    bindings,
+                    "#[allow(non_upper_case_globals)] pub const UKR_AVX512_{domain:?}_{dtype:?}: &[[unsafe extern fn(); {max_m}]; {max_n}] = &"
+                )?;
                 writeln!(bindings, "[")?;
-                for m in 0..max_m {
-                    writeln!(bindings, "{},", names[m + max_m * n])?;
+                for n in 0..max_n {
+                    writeln!(bindings, "[")?;
+                    for m in 0..max_m {
+                        writeln!(bindings, "{},", names[m + max_m * n])?;
+                    }
+                    writeln!(bindings, "],")?;
                 }
-                writeln!(bindings, "],")?;
+                writeln!(bindings, "];")?;
             }
-            writeln!(bindings, "];")?;
         }
     }
 
