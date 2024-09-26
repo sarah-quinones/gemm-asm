@@ -77,13 +77,13 @@ pub struct Plan {
     // 88
     do_nothing: bool,
     // 89
-    mid_chunk_only: bool,
+    two_or_more: bool,
 
     pub mr: usize,
     pub nr: usize,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Accum {
     Add,
     Replace,
@@ -109,7 +109,7 @@ const fn real_plan_impl<const MR: usize, const NR: usize, const N: usize, M>(
     let left_width = ncols.saturating_sub(1) / NR;
     let mid_height = ((padded_rows / N).saturating_sub(1) / MR).saturating_sub(1);
 
-    let mid_chunk_only = padded_rows > MR * N;
+    let two_or_more = padded_rows > MR * N;
 
     let bit0 = match dst {
         Accum::Add => 1,
@@ -131,8 +131,71 @@ const fn real_plan_impl<const MR: usize, const NR: usize, const N: usize, M>(
         left_width,
         flags: bit0 | (bit1 << 1) | (bit2 << 2),
         do_nothing: nrows == 0 || ncols == 0,
-        mid_chunk_only,
+        two_or_more,
         mr: MR * N,
+        nr: NR,
+    }
+}
+
+core::arch::global_asm! {
+    ".globl libfaer_gemm_nop",
+    "libfaer_gemm_nop:",
+    "ret",
+}
+
+extern "C" {
+    pub fn libfaer_gemm_nop();
+}
+
+const fn real_dot_plan_impl<const MR: usize, const NR: usize, const N: usize, M>(
+    extra_masked_top_rows: usize,
+    nrows_plus_extra: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+    ukr: &'static [[unsafe extern "C" fn(); MR]; NR],
+    head_masks: &'static [M; N],
+    tail_masks: &'static [M; N],
+) -> Plan {
+    assert!(extra_masked_top_rows < N);
+    assert!(nrows_plus_extra >= extra_masked_top_rows);
+
+    let full_rows = nrows_plus_extra;
+    let padded_rows = full_rows.next_multiple_of(N);
+
+    let bottom_mr = (lhs_ncols + MR - 1) % MR + 1;
+    let right_nr = (rhs_ncols + NR - 1) % NR + 1;
+
+    let left_width = rhs_ncols.saturating_sub(1) / NR;
+    let mid_height = lhs_ncols.saturating_sub(1) / MR;
+
+    let two_or_more = mid_height != 0;
+    let mid_height = mid_height.saturating_sub(1);
+
+    let bit0 = match dst {
+        Accum::Add => 1,
+        Accum::Replace => 0,
+    };
+    let bit1 = 1;
+    let bit2 = 1;
+
+    Plan {
+        head_mask: core::ptr::from_ref(&head_masks[extra_masked_top_rows]) as *const _,
+        tail_mask: core::ptr::from_ref(&tail_masks[padded_rows - full_rows]) as *const _,
+
+        top_left: ukr[NR - 1][MR - 1],
+        mid_left: ukr[NR - 1][MR - 1],
+        top_right: ukr[right_nr - 1][MR - 1],
+        mid_right: ukr[right_nr - 1][MR - 1],
+        bot_left: ukr[NR - 1][bottom_mr - 1],
+        bot_right: ukr[right_nr - 1][bottom_mr - 1],
+
+        mid_height,
+        left_width,
+        flags: bit0 | (bit1 << 1) | (bit2 << 2),
+        do_nothing: lhs_ncols == 0 || rhs_ncols == 0,
+        two_or_more,
+        mr: MR,
         nr: NR,
     }
 }
@@ -183,8 +246,65 @@ const fn cplx_plan_impl<const MR: usize, const NR: usize, const N: usize, M: cor
         left_width,
         flags: bit0 | (bit1 << 1) | (bit2 << 2) | (bit3 << 3) | (bit4 << 4),
         do_nothing: nrows == 0 || ncols == 0,
-        mid_chunk_only,
+        two_or_more: mid_chunk_only,
         mr: MR * N,
+        nr: NR,
+    }
+}
+
+const fn cplx_dot_plan_impl<const MR: usize, const NR: usize, const N: usize, M>(
+    extra_masked_top_rows: usize,
+    nrows_plus_extra: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+    conj_lhs: bool,
+    conj_rhs: bool,
+    ukr: &'static [[unsafe extern "C" fn(); MR]; NR],
+    head_masks: &'static [M; N],
+    tail_masks: &'static [M; N],
+) -> Plan {
+    assert!(extra_masked_top_rows < N);
+    assert!(nrows_plus_extra >= extra_masked_top_rows);
+
+    let full_rows = nrows_plus_extra;
+    let padded_rows = full_rows.next_multiple_of(N);
+
+    let bottom_mr = (lhs_ncols + MR - 1) % MR + 1;
+    let right_nr = (rhs_ncols + NR - 1) % NR + 1;
+
+    let left_width = rhs_ncols.saturating_sub(1) / NR;
+    let mid_height = lhs_ncols.saturating_sub(1) / MR;
+
+    let two_or_more = mid_height != 0;
+    let mid_height = mid_height.saturating_sub(1);
+
+    let bit0 = match dst {
+        Accum::Add => 1,
+        Accum::Replace => 0,
+    };
+    let bit1 = 1;
+    let bit2 = 1;
+    let bit3 = (conj_lhs == conj_rhs) as usize;
+    let bit4 = conj_lhs as usize;
+
+    Plan {
+        head_mask: core::ptr::from_ref(&head_masks[extra_masked_top_rows]) as *const _,
+        tail_mask: core::ptr::from_ref(&tail_masks[padded_rows - full_rows]) as *const _,
+
+        top_left: ukr[NR - 1][MR - 1],
+        mid_left: ukr[NR - 1][MR - 1],
+        top_right: ukr[right_nr - 1][MR - 1],
+        mid_right: ukr[right_nr - 1][MR - 1],
+        bot_left: ukr[NR - 1][bottom_mr - 1],
+        bot_right: ukr[right_nr - 1][bottom_mr - 1],
+
+        mid_height,
+        left_width,
+        flags: bit0 | (bit1 << 1) | (bit2 << 2) | (bit3 << 3) | (bit4 << 4),
+        do_nothing: lhs_ncols == 0 || rhs_ncols == 0,
+        two_or_more,
+        mr: MR,
         nr: NR,
     }
 }
@@ -511,6 +631,339 @@ pub const fn c64_plan_avx512(
     )
 }
 
+#[inline]
+pub const fn f32_dot_plan_avx(
+    extra_masked_top_rows: usize,
+    nrows: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+) -> Plan {
+    const N: usize = 32 / size_of::<f32>();
+    const HEAD_MASK: &[__m256i; N] = &unsafe {
+        core::mem::transmute([
+            [-1, -1, -1, -1, -1, -1, -1, -1],
+            [0, -1, -1, -1, -1, -1, -1, -1],
+            [0, 0, -1, -1, -1, -1, -1, -1],
+            [0, 0, 0, -1, -1, -1, -1, -1],
+            [0, 0, 0, 0, -1, -1, -1, -1],
+            [0, 0, 0, 0, 0, -1, -1, -1],
+            [0, 0, 0, 0, 0, 0, -1, -1],
+            [0, 0, 0, 0, 0, 0, 0, -1i32],
+        ])
+    };
+    const TAIL_MASK: &[__m256i; N] = &unsafe {
+        core::mem::transmute([
+            [-1, -1, -1, -1, -1, -1, -1, -1],
+            [-1, -1, -1, -1, -1, -1, -1, 0],
+            [-1, -1, -1, -1, -1, -1, 0, 0],
+            [-1, -1, -1, -1, -1, 0, 0, 0],
+            [-1, -1, -1, -1, 0, 0, 0, 0],
+            [-1, -1, -1, 0, 0, 0, 0, 0],
+            [-1, -1, 0, 0, 0, 0, 0, 0],
+            [-1, 0, 0, 0, 0, 0, 0, 0i32],
+        ])
+    };
+
+    real_dot_plan_impl(
+        extra_masked_top_rows,
+        nrows,
+        lhs_ncols,
+        rhs_ncols,
+        dst,
+        HKR_AVX_real_float32,
+        HEAD_MASK,
+        TAIL_MASK,
+    )
+}
+#[inline]
+pub const fn f64_dot_plan_avx(
+    extra_masked_top_rows: usize,
+    nrows: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+) -> Plan {
+    const N: usize = 32 / size_of::<f64>();
+    const HEAD_MASK: &[__m256i; N] = &unsafe {
+        core::mem::transmute([
+            [-1, -1, -1, -1],
+            [0, -1, -1, -1],
+            [0, 0, -1, -1],
+            [0, 0, 0, -1i64],
+        ])
+    };
+    const TAIL_MASK: &[__m256i; N] = &unsafe {
+        core::mem::transmute([
+            [-1, -1, -1, -1],
+            [-1, -1, -1, 0],
+            [-1, -1, 0, 0],
+            [-1, 0, 0, 0i64],
+        ])
+    };
+
+    real_dot_plan_impl(
+        extra_masked_top_rows,
+        nrows,
+        lhs_ncols,
+        rhs_ncols,
+        dst,
+        HKR_AVX_real_float64,
+        HEAD_MASK,
+        TAIL_MASK,
+    )
+}
+#[inline]
+pub const fn c32_dot_plan_avx(
+    extra_masked_top_rows: usize,
+    nrows: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+    conj_lhs: bool,
+    conj_rhs: bool,
+) -> Plan {
+    const N: usize = 32 / (2 * size_of::<f32>());
+    const HEAD_MASK: &[__m256i; N] = &unsafe {
+        core::mem::transmute([
+            [-1, -1, -1, -1, -1, -1, -1, -1],
+            [0, 0, -1, -1, -1, -1, -1, -1],
+            [0, 0, 0, 0, -1, -1, -1, -1],
+            [0, 0, 0, 0, 0, 0, -1, -1i32],
+        ])
+    };
+    const TAIL_MASK: &[__m256i; N] = &unsafe {
+        core::mem::transmute([
+            [-1, -1, -1, -1, -1, -1, -1, -1],
+            [-1, -1, -1, -1, -1, -1, 0, 0],
+            [-1, -1, -1, -1, 0, 0, 0, 0],
+            [-1, -1, 0, 0, 0, 0, 0, 0i32],
+        ])
+    };
+
+    cplx_dot_plan_impl(
+        extra_masked_top_rows,
+        nrows,
+        lhs_ncols,
+        rhs_ncols,
+        dst,
+        conj_lhs,
+        conj_rhs,
+        HKR_AVX_cplx_float32,
+        HEAD_MASK,
+        TAIL_MASK,
+    )
+}
+#[inline]
+pub const fn c64_dot_plan_avx(
+    extra_masked_top_rows: usize,
+    nrows: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+    conj_lhs: bool,
+    conj_rhs: bool,
+) -> Plan {
+    const N: usize = 32 / (2 * size_of::<f64>());
+    const HEAD_MASK: &[__m256i; N] =
+        &unsafe { core::mem::transmute([[-1, -1, -1, -1], [0, 0, -1, -1i64]]) };
+    const TAIL_MASK: &[__m256i; N] =
+        &unsafe { core::mem::transmute([[-1, -1, -1, -1], [-1, -1, 0, 0i64]]) };
+
+    cplx_dot_plan_impl(
+        extra_masked_top_rows,
+        nrows,
+        lhs_ncols,
+        rhs_ncols,
+        dst,
+        conj_lhs,
+        conj_rhs,
+        HKR_AVX_cplx_float64,
+        HEAD_MASK,
+        TAIL_MASK,
+    )
+}
+#[inline]
+pub const fn f32_dot_plan_avx512(
+    extra_masked_top_rows: usize,
+    nrows: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+) -> Plan {
+    const N: usize = 64 / size_of::<f32>();
+    const HEAD_MASK: &[u16; N] = &[
+        0b1111111111111111, //
+        0b1111111111111110, //
+        0b1111111111111100, //
+        0b1111111111111000, //
+        0b1111111111110000, //
+        0b1111111111100000, //
+        0b1111111111000000, //
+        0b1111111110000000, //
+        0b1111111100000000, //
+        0b1111111000000000, //
+        0b1111110000000000, //
+        0b1111100000000000, //
+        0b1111000000000000, //
+        0b1110000000000000, //
+        0b1100000000000000, //
+        0b1000000000000000, //
+    ];
+    const TAIL_MASK: &[u16; N] = &[
+        0b1111111111111111, //
+        0b0111111111111111, //
+        0b0011111111111111, //
+        0b0001111111111111, //
+        0b0000111111111111, //
+        0b0000011111111111, //
+        0b0000001111111111, //
+        0b0000000111111111, //
+        0b0000000011111111, //
+        0b0000000001111111, //
+        0b0000000000111111, //
+        0b0000000000011111, //
+        0b0000000000001111, //
+        0b0000000000000111, //
+        0b0000000000000011, //
+        0b0000000000000001, //
+    ];
+
+    real_dot_plan_impl(
+        extra_masked_top_rows,
+        nrows,
+        lhs_ncols,
+        rhs_ncols,
+        dst,
+        HKR_AVX512_real_float32,
+        HEAD_MASK,
+        TAIL_MASK,
+    )
+}
+#[inline]
+pub const fn f64_dot_plan_avx512(
+    extra_masked_top_rows: usize,
+    nrows: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+) -> Plan {
+    const N: usize = 64 / size_of::<f64>();
+    const HEAD_MASK: &[u8; N] = &[
+        0b11111111, //
+        0b11111110, //
+        0b11111100, //
+        0b11111000, //
+        0b11110000, //
+        0b11100000, //
+        0b11000000, //
+        0b10000000, //
+    ];
+    const TAIL_MASK: &[u8; N] = &[
+        0b11111111, //
+        0b01111111, //
+        0b00111111, //
+        0b00011111, //
+        0b00001111, //
+        0b00000111, //
+        0b00000011, //
+        0b00000001, //
+    ];
+
+    real_dot_plan_impl(
+        extra_masked_top_rows,
+        nrows,
+        lhs_ncols,
+        rhs_ncols,
+        dst,
+        HKR_AVX512_real_float64,
+        HEAD_MASK,
+        TAIL_MASK,
+    )
+}
+
+#[inline]
+pub const fn c32_dot_plan_avx512(
+    extra_masked_top_rows: usize,
+    nrows: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+    conj_lhs: bool,
+    conj_rhs: bool,
+) -> Plan {
+    const N: usize = 64 / (2 * size_of::<f32>());
+    const HEAD_MASK: &[u16; N] = &[
+        0b1111111111111111, //
+        0b1111111111111100, //
+        0b1111111111110000, //
+        0b1111111111000000, //
+        0b1111111100000000, //
+        0b1111110000000000, //
+        0b1111000000000000, //
+        0b1100000000000000, //
+    ];
+    const TAIL_MASK: &[u16; N] = &[
+        0b1111111111111111, //
+        0b0011111111111111, //
+        0b0000111111111111, //
+        0b0000001111111111, //
+        0b0000000011111111, //
+        0b0000000000111111, //
+        0b0000000000001111, //
+        0b0000000000000011, //
+    ];
+
+    cplx_dot_plan_impl(
+        extra_masked_top_rows,
+        nrows,
+        lhs_ncols,
+        rhs_ncols,
+        dst,
+        conj_lhs,
+        conj_rhs,
+        HKR_AVX512_cplx_float32,
+        HEAD_MASK,
+        TAIL_MASK,
+    )
+}
+#[inline]
+pub const fn c64_dot_plan_avx512(
+    extra_masked_top_rows: usize,
+    nrows: usize,
+    lhs_ncols: usize,
+    rhs_ncols: usize,
+    dst: Accum,
+    conj_lhs: bool,
+    conj_rhs: bool,
+) -> Plan {
+    const N: usize = 64 / (2 * size_of::<f64>());
+    const HEAD_MASK: &[u8; N] = &[
+        0b11111111, //
+        0b11111100, //
+        0b11110000, //
+        0b11000000, //
+    ];
+    const TAIL_MASK: &[u8; N] = &[
+        0b11111111, //
+        0b00111111, //
+        0b00001111, //
+        0b00000011, //
+    ];
+
+    cplx_dot_plan_impl(
+        extra_masked_top_rows,
+        nrows,
+        lhs_ncols,
+        rhs_ncols,
+        dst,
+        conj_lhs,
+        conj_rhs,
+        HKR_AVX512_cplx_float64,
+        HEAD_MASK,
+        TAIL_MASK,
+    )
+}
 pub unsafe fn millikernel(
     data: &Plan,
     depth: usize,
@@ -676,6 +1129,32 @@ pub unsafe fn millikernel(
         in("r14") dst_brs,
         in("r15") dst_bcs,
     };
+}
+
+pub unsafe fn dot_millikernel(
+    data: &Plan,
+    depth: usize,
+    lhs_cs: isize,
+    rhs_cs: isize,
+    dst_rs: isize,
+    dst_cs: isize,
+
+    dst_brs: isize,
+    dst_bcs: isize,
+
+    lhs_bs: isize,
+    rhs_bs: isize,
+
+    lhs_ptr: *const (),
+    rhs_ptr: *const (),
+    dst_ptr: *mut (),
+
+    alpha: *const (),
+) {
+    millikernel(
+        data, depth, lhs_cs, dst_rs, rhs_cs, dst_cs, dst_brs, dst_bcs, lhs_bs, rhs_bs, lhs_ptr,
+        rhs_ptr, dst_ptr, alpha,
+    );
 }
 
 #[cfg(test)]
@@ -961,10 +1440,6 @@ mod cplx_tests {
             for n in 1..24 {
                 let k = 2;
                 for skip in 0..Ord::min(2, m) {
-                    // let m = 5;
-                    // let n = 1;
-                    // let skip = 0;
-
                     let target = &mut *avec![c64::ZERO; m * n];
                     let dst = &mut *avec![c64::ZERO; m * n];
                     let lhs = &mut *avec![c64::ZERO; m * k];
@@ -1239,6 +1714,612 @@ mod cplx_tests {
                             }
                             for i in 0..m * n {
                                 assert!((dst[i] - target[i]).abs() < 1e-4);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod dot_real_tests {
+    use super::*;
+    use aligned_vec::avec;
+
+    #[test]
+    fn test_avx_f32() {
+        for m in 0..12 {
+            for n in 0..12 {
+                for k in 0..20 {
+                    for skip in 0..Ord::min(8, k) {
+                        let target = &mut *avec![0.0; m * n];
+                        let dst = &mut *avec![0.0; m * n];
+                        let lhs = &mut *avec![0.0; k * m];
+                        let rhs = &mut *avec![0.0; k * n];
+
+                        for x in &mut *lhs {
+                            *x = rand::random();
+                        }
+                        for x in &mut *rhs {
+                            *x = rand::random();
+                        }
+
+                        let plan = f32_dot_plan_avx(skip, k, m, n, Accum::Replace);
+
+                        unsafe {
+                            dot_millikernel(
+                                &plan,
+                                k,
+                                (k * size_of::<f32>()) as isize,
+                                (k * size_of::<f32>()) as isize,
+                                (size_of::<f32>()) as isize,
+                                (m * size_of::<f32>()) as isize,
+                                (plan.mr * size_of::<f32>()) as isize,
+                                (plan.nr * m * size_of::<f32>()) as isize,
+                                (plan.mr * k * size_of::<f32>()) as isize,
+                                (plan.nr * k * size_of::<f32>()) as isize,
+                                lhs.as_ptr() as _,
+                                rhs.as_ptr() as _,
+                                dst.as_mut_ptr() as _,
+                                core::ptr::from_ref(&1.0_f32) as _,
+                            )
+                        };
+
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut acc = 0.0;
+                                for depth in 0..k {
+                                    if depth >= skip {
+                                        acc = f32::mul_add(
+                                            lhs[depth + k * i],
+                                            rhs[depth + k * j],
+                                            acc,
+                                        );
+                                    }
+                                }
+                                target[i + m * j] = acc;
+                            }
+                        }
+                        for i in 0..m * n {
+                            assert!((dst[i] - target[i]).abs() < 1e-4);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_avx512_f32() {
+        for m in 0..12 {
+            for n in 0..12 {
+                for k in 0..20 {
+                    for skip in 0..Ord::min(16, k) {
+                        let target = &mut *avec![0.0; m * n];
+                        let dst = &mut *avec![0.0; m * n];
+                        let lhs = &mut *avec![0.0; k * m];
+                        let rhs = &mut *avec![0.0; k * n];
+
+                        for x in &mut *lhs {
+                            *x = rand::random();
+                        }
+                        for x in &mut *rhs {
+                            *x = rand::random();
+                        }
+
+                        let plan = f32_dot_plan_avx512(skip, k, m, n, Accum::Replace);
+
+                        unsafe {
+                            dot_millikernel(
+                                &plan,
+                                k,
+                                (k * size_of::<f32>()) as isize,
+                                (k * size_of::<f32>()) as isize,
+                                (size_of::<f32>()) as isize,
+                                (m * size_of::<f32>()) as isize,
+                                (plan.mr * size_of::<f32>()) as isize,
+                                (plan.nr * m * size_of::<f32>()) as isize,
+                                (plan.mr * k * size_of::<f32>()) as isize,
+                                (plan.nr * k * size_of::<f32>()) as isize,
+                                lhs.as_ptr() as _,
+                                rhs.as_ptr() as _,
+                                dst.as_mut_ptr() as _,
+                                core::ptr::from_ref(&1.0_f32) as _,
+                            )
+                        };
+
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut acc = 0.0;
+                                for depth in 0..k {
+                                    if depth >= skip {
+                                        acc = f32::mul_add(
+                                            lhs[depth + k * i],
+                                            rhs[depth + k * j],
+                                            acc,
+                                        );
+                                    }
+                                }
+                                target[i + m * j] = acc;
+                            }
+                        }
+                        for i in 0..m * n {
+                            assert!((dst[i] - target[i]).abs() < 1e-4);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_avx_f64() {
+        for m in 0..12 {
+            for n in 0..12 {
+                for k in 0..20 {
+                    for skip in 0..Ord::min(4, k) {
+                        let target = &mut *avec![0.0; m * n];
+                        let dst = &mut *avec![0.0; m * n];
+                        let lhs = &mut *avec![0.0; k * m];
+                        let rhs = &mut *avec![0.0; k * n];
+
+                        for x in &mut *lhs {
+                            *x = rand::random();
+                        }
+                        for x in &mut *rhs {
+                            *x = rand::random();
+                        }
+
+                        let plan = f64_dot_plan_avx(skip, k, m, n, Accum::Replace);
+
+                        unsafe {
+                            dot_millikernel(
+                                &plan,
+                                k,
+                                (k * size_of::<f64>()) as isize,
+                                (k * size_of::<f64>()) as isize,
+                                (size_of::<f64>()) as isize,
+                                (m * size_of::<f64>()) as isize,
+                                (plan.mr * size_of::<f64>()) as isize,
+                                (plan.nr * m * size_of::<f64>()) as isize,
+                                (plan.mr * k * size_of::<f64>()) as isize,
+                                (plan.nr * k * size_of::<f64>()) as isize,
+                                lhs.as_ptr() as _,
+                                rhs.as_ptr() as _,
+                                dst.as_mut_ptr() as _,
+                                core::ptr::from_ref(&1.0_f64) as _,
+                            )
+                        };
+
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut acc = 0.0;
+                                for depth in 0..k {
+                                    if depth >= skip {
+                                        acc = f64::mul_add(
+                                            lhs[depth + k * i],
+                                            rhs[depth + k * j],
+                                            acc,
+                                        );
+                                    }
+                                }
+                                target[i + m * j] = acc;
+                            }
+                        }
+                        for i in 0..m * n {
+                            assert!((dst[i] - target[i]).abs() < 1e-4);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_avx512_f64() {
+        for m in 0..12 {
+            for n in 0..12 {
+                for k in 0..20 {
+                    for skip in 0..Ord::min(8, k) {
+                        let target = &mut *avec![0.0; m * n];
+                        let dst = &mut *avec![0.0; m * n];
+                        let lhs = &mut *avec![0.0; k * m];
+                        let rhs = &mut *avec![0.0; k * n];
+
+                        for x in &mut *lhs {
+                            *x = rand::random();
+                        }
+                        for x in &mut *rhs {
+                            *x = rand::random();
+                        }
+
+                        let plan = f64_dot_plan_avx512(skip, k, m, n, Accum::Replace);
+
+                        unsafe {
+                            dot_millikernel(
+                                &plan,
+                                k,
+                                (k * size_of::<f64>()) as isize,
+                                (k * size_of::<f64>()) as isize,
+                                (size_of::<f64>()) as isize,
+                                (m * size_of::<f64>()) as isize,
+                                (plan.mr * size_of::<f64>()) as isize,
+                                (plan.nr * m * size_of::<f64>()) as isize,
+                                (plan.mr * k * size_of::<f64>()) as isize,
+                                (plan.nr * k * size_of::<f64>()) as isize,
+                                lhs.as_ptr() as _,
+                                rhs.as_ptr() as _,
+                                dst.as_mut_ptr() as _,
+                                core::ptr::from_ref(&1.0_f64) as _,
+                            )
+                        };
+
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut acc = 0.0;
+                                for depth in 0..k {
+                                    if depth >= skip {
+                                        acc = f64::mul_add(
+                                            lhs[depth + k * i],
+                                            rhs[depth + k * j],
+                                            acc,
+                                        );
+                                    }
+                                }
+                                target[i + m * j] = acc;
+                            }
+                        }
+                        for i in 0..m * n {
+                            assert!((dst[i] - target[i]).abs() < 1e-4);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod dot_cplx_tests {
+    use super::*;
+    use aligned_vec::avec;
+    use num_complex::ComplexFloat;
+    use rand::random;
+
+    #[allow(non_camel_case_types)]
+    type c64 = num_complex::Complex<f64>;
+    #[allow(non_camel_case_types)]
+    type c32 = num_complex::Complex<f32>;
+
+    #[test]
+    fn test_avx_f32() {
+        for m in 1..12 {
+            for n in 1..12 {
+                for k in 0..10 {
+                    for skip in 0..Ord::min(4, k) {
+                        for conj_lhs in [false, true] {
+                            for conj_rhs in [false, true] {
+                                let target = &mut *avec![c32::ZERO; m * n];
+                                let dst = &mut *avec![c32::ZERO; m * n];
+                                let lhs = &mut *avec![c32::ZERO; m * k];
+                                let rhs = &mut *avec![c32::ZERO; n * k];
+
+                                for x in &mut *lhs {
+                                    x.re = random();
+                                    x.im = random();
+                                }
+                                for x in &mut *rhs {
+                                    x.re = random();
+                                    x.im = random();
+                                }
+
+                                let plan = c32_dot_plan_avx(
+                                    skip,
+                                    k,
+                                    m,
+                                    n,
+                                    Accum::Replace,
+                                    conj_lhs,
+                                    conj_rhs,
+                                );
+                                let alpha = c32::new(2.3, -1.5);
+
+                                unsafe {
+                                    dot_millikernel(
+                                        &plan,
+                                        k,
+                                        (k * size_of::<c32>()) as isize,
+                                        (k * size_of::<c32>()) as isize,
+                                        (size_of::<c32>()) as isize,
+                                        (m * size_of::<c32>()) as isize,
+                                        (plan.mr * size_of::<c32>()) as isize,
+                                        (plan.nr * m * size_of::<c32>()) as isize,
+                                        (plan.mr * k * size_of::<c32>()) as isize,
+                                        (plan.nr * k * size_of::<c32>()) as isize,
+                                        lhs.as_ptr() as _,
+                                        rhs.as_ptr() as _,
+                                        dst.as_mut_ptr() as _,
+                                        core::ptr::from_ref(&alpha) as _,
+                                    )
+                                };
+
+                                for i in 0..m {
+                                    for j in 0..n {
+                                        let mut acc = c32::ZERO;
+                                        for depth in 0..k {
+                                            if depth >= skip {
+                                                let mut lhs = lhs[depth + i * k];
+                                                let mut rhs = rhs[depth + j * k];
+                                                if conj_lhs {
+                                                    lhs = lhs.conj();
+                                                }
+                                                if conj_rhs {
+                                                    rhs = rhs.conj();
+                                                }
+
+                                                acc += lhs * rhs;
+                                            }
+                                        }
+                                        target[i + m * j] = alpha * acc;
+                                    }
+                                }
+
+                                for i in 0..m * n {
+                                    assert!((dst[i] - target[i]).abs() < 1e-4);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_avx_f64() {
+        for m in 1..12 {
+            for n in 1..12 {
+                for k in 0..10 {
+                    for skip in 0..Ord::min(2, k) {
+                        for conj_lhs in [false, true] {
+                            for conj_rhs in [false, true] {
+                                let target = &mut *avec![c64::ZERO; m * n];
+                                let dst = &mut *avec![c64::ZERO; m * n];
+                                let lhs = &mut *avec![c64::ZERO; m * k];
+                                let rhs = &mut *avec![c64::ZERO; n * k];
+
+                                for x in &mut *lhs {
+                                    x.re = random();
+                                    x.im = random();
+                                }
+                                for x in &mut *rhs {
+                                    x.re = random();
+                                    x.im = random();
+                                }
+
+                                let plan = c64_dot_plan_avx(
+                                    skip,
+                                    k,
+                                    m,
+                                    n,
+                                    Accum::Replace,
+                                    conj_lhs,
+                                    conj_rhs,
+                                );
+                                let alpha = c64::new(2.3, -1.5);
+
+                                unsafe {
+                                    dot_millikernel(
+                                        &plan,
+                                        k,
+                                        (k * size_of::<c64>()) as isize,
+                                        (k * size_of::<c64>()) as isize,
+                                        (size_of::<c64>()) as isize,
+                                        (m * size_of::<c64>()) as isize,
+                                        (plan.mr * size_of::<c64>()) as isize,
+                                        (plan.nr * m * size_of::<c64>()) as isize,
+                                        (plan.mr * k * size_of::<c64>()) as isize,
+                                        (plan.nr * k * size_of::<c64>()) as isize,
+                                        lhs.as_ptr() as _,
+                                        rhs.as_ptr() as _,
+                                        dst.as_mut_ptr() as _,
+                                        core::ptr::from_ref(&alpha) as _,
+                                    )
+                                };
+
+                                for i in 0..m {
+                                    for j in 0..n {
+                                        let mut acc = c64::ZERO;
+                                        for depth in 0..k {
+                                            if depth >= skip {
+                                                let mut lhs = lhs[depth + i * k];
+                                                let mut rhs = rhs[depth + j * k];
+                                                if conj_lhs {
+                                                    lhs = lhs.conj();
+                                                }
+                                                if conj_rhs {
+                                                    rhs = rhs.conj();
+                                                }
+
+                                                acc += lhs * rhs;
+                                            }
+                                        }
+                                        target[i + m * j] = alpha * acc;
+                                    }
+                                }
+
+                                for i in 0..m * n {
+                                    assert!((dst[i] - target[i]).abs() < 1e-4);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_avx512_f32() {
+        for m in 1..12 {
+            for n in 1..12 {
+                for k in 0..10 {
+                    for skip in 0..Ord::min(8, k) {
+                        for conj_lhs in [false, true] {
+                            for conj_rhs in [false, true] {
+                                let target = &mut *avec![c32::ZERO; m * n];
+                                let dst = &mut *avec![c32::ZERO; m * n];
+                                let lhs = &mut *avec![c32::ZERO; m * k];
+                                let rhs = &mut *avec![c32::ZERO; n * k];
+
+                                for x in &mut *lhs {
+                                    x.re = random();
+                                    x.im = random();
+                                }
+                                for x in &mut *rhs {
+                                    x.re = random();
+                                    x.im = random();
+                                }
+
+                                let plan = c32_dot_plan_avx512(
+                                    skip,
+                                    k,
+                                    m,
+                                    n,
+                                    Accum::Replace,
+                                    conj_lhs,
+                                    conj_rhs,
+                                );
+                                let alpha = c32::new(2.3, -1.5);
+
+                                unsafe {
+                                    dot_millikernel(
+                                        &plan,
+                                        k,
+                                        (k * size_of::<c32>()) as isize,
+                                        (k * size_of::<c32>()) as isize,
+                                        (size_of::<c32>()) as isize,
+                                        (m * size_of::<c32>()) as isize,
+                                        (plan.mr * size_of::<c32>()) as isize,
+                                        (plan.nr * m * size_of::<c32>()) as isize,
+                                        (plan.mr * k * size_of::<c32>()) as isize,
+                                        (plan.nr * k * size_of::<c32>()) as isize,
+                                        lhs.as_ptr() as _,
+                                        rhs.as_ptr() as _,
+                                        dst.as_mut_ptr() as _,
+                                        core::ptr::from_ref(&alpha) as _,
+                                    )
+                                };
+
+                                for i in 0..m {
+                                    for j in 0..n {
+                                        let mut acc = c32::ZERO;
+                                        for depth in 0..k {
+                                            if depth >= skip {
+                                                let mut lhs = lhs[depth + i * k];
+                                                let mut rhs = rhs[depth + j * k];
+                                                if conj_lhs {
+                                                    lhs = lhs.conj();
+                                                }
+                                                if conj_rhs {
+                                                    rhs = rhs.conj();
+                                                }
+
+                                                acc += lhs * rhs;
+                                            }
+                                        }
+                                        target[i + m * j] = alpha * acc;
+                                    }
+                                }
+
+                                for i in 0..m * n {
+                                    assert!((dst[i] - target[i]).abs() < 1e-4);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn test_avx512_f64() {
+        for m in 1..12 {
+            for n in 1..12 {
+                for k in 0..10 {
+                    for skip in 0..Ord::min(4, k) {
+                        for conj_lhs in [false, true] {
+                            for conj_rhs in [false, true] {
+                                let target = &mut *avec![c64::ZERO; m * n];
+                                let dst = &mut *avec![c64::ZERO; m * n];
+                                let lhs = &mut *avec![c64::ZERO; m * k];
+                                let rhs = &mut *avec![c64::ZERO; n * k];
+
+                                for x in &mut *lhs {
+                                    x.re = random();
+                                    x.im = random();
+                                }
+                                for x in &mut *rhs {
+                                    x.re = random();
+                                    x.im = random();
+                                }
+
+                                let plan = c64_dot_plan_avx512(
+                                    skip,
+                                    k,
+                                    m,
+                                    n,
+                                    Accum::Replace,
+                                    conj_lhs,
+                                    conj_rhs,
+                                );
+                                let alpha = c64::new(2.3, -1.5);
+
+                                unsafe {
+                                    dot_millikernel(
+                                        &plan,
+                                        k,
+                                        (k * size_of::<c64>()) as isize,
+                                        (k * size_of::<c64>()) as isize,
+                                        (size_of::<c64>()) as isize,
+                                        (m * size_of::<c64>()) as isize,
+                                        (plan.mr * size_of::<c64>()) as isize,
+                                        (plan.nr * m * size_of::<c64>()) as isize,
+                                        (plan.mr * k * size_of::<c64>()) as isize,
+                                        (plan.nr * k * size_of::<c64>()) as isize,
+                                        lhs.as_ptr() as _,
+                                        rhs.as_ptr() as _,
+                                        dst.as_mut_ptr() as _,
+                                        core::ptr::from_ref(&alpha) as _,
+                                    )
+                                };
+
+                                for i in 0..m {
+                                    for j in 0..n {
+                                        let mut acc = c64::ZERO;
+                                        for depth in 0..k {
+                                            if depth >= skip {
+                                                let mut lhs = lhs[depth + i * k];
+                                                let mut rhs = rhs[depth + j * k];
+                                                if conj_lhs {
+                                                    lhs = lhs.conj();
+                                                }
+                                                if conj_rhs {
+                                                    rhs = rhs.conj();
+                                                }
+
+                                                acc += lhs * rhs;
+                                            }
+                                        }
+                                        target[i + m * j] = alpha * acc;
+                                    }
+                                }
+
+                                for i in 0..m * n {
+                                    assert!((dst[i] - target[i]).abs() < 1e-4);
+                                }
                             }
                         }
                     }

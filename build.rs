@@ -48,10 +48,24 @@ impl std::fmt::Display for DType {
     }
 }
 
-use x86_64::{RealAvx, RealAvx512};
 pub mod x86_64 {
-    use crate::{DType, Domain};
-    use std::fmt::Write;
+    use super::*;
+
+    pub const VERTICAL_RHS_RS: Reg = Reg::Rcx;
+    pub const HORIZONTAL_DST_RS: Reg = Reg::Rcx;
+
+    pub const DEPTH: Reg = Reg::Rax;
+    pub const LHS_CS: Reg = Reg::Rdi;
+    pub const RHS_CS: Reg = Reg::Rdx;
+    pub const DST_CS: Reg = Reg::Rsi;
+    pub const TOP_MASK_PTR: Reg = Reg::Rbx;
+    pub const BOT_MASK_PTR: Reg = Reg::Rbp;
+    pub const ALPHA_PTR: Reg = Reg::R8;
+
+    pub const LHS_PTR: Reg = Reg::R9;
+    pub const RHS_PTR: Reg = Reg::R10;
+    pub const DST_PTR: Reg = Reg::R11;
+    pub const FLAGS: Reg = Reg::R12;
 
     pub struct RealAvx(pub String, pub DType, pub Domain);
     pub struct RealAvx512(pub String, pub DType, pub Domain);
@@ -175,6 +189,43 @@ pub mod x86_64 {
             this.writeln(&format!("2{label}0:"));
             if_false(this);
             this.writeln(&format!("2{label}1:"));
+        }
+
+        fn vre_im(&mut self, re: usize, im: usize) {
+            if self.is_cplx() {
+                match self.1 {
+                    DType::F64 => {
+                        writeln!(self.0, "vunpckhpd ymm{im}, ymm{re}, ymm{re}").unwrap();
+                        writeln!(self.0, "vunpcklpd ymm{re}, ymm{re}, ymm{re}").unwrap();
+                    }
+                    DType::F32 => {
+                        writeln!(self.0, "vmovshdup ymm{im}, ymm{re}").unwrap();
+                        writeln!(self.0, "vmovsldup ymm{re}, ymm{re}").unwrap();
+                    }
+                }
+            }
+        }
+
+        fn vreduce(&mut self, xmm: usize, tmp: usize) {
+            let dtype = self.1;
+
+            writeln!(self.0, "vextractf128 xmm{tmp}, ymm{xmm}, 1").unwrap();
+            writeln!(self.0, "vaddp{dtype} xmm{xmm}, xmm{xmm}, xmm{tmp}").unwrap();
+
+            if dtype.size() == 8 && self.is_cplx() {
+                return;
+            }
+
+            writeln!(self.0, "vunpckhpd xmm{tmp}, xmm{xmm}, xmm{xmm}").unwrap();
+            if dtype.size() == 4 {
+                writeln!(self.0, "vaddp{dtype} xmm{xmm}, xmm{xmm}, xmm{tmp}").unwrap();
+                if self.is_cplx() {
+                    return;
+                }
+                writeln!(self.0, "vunpcklps xmm{tmp}, xmm{xmm}, xmm{xmm}").unwrap();
+                writeln!(self.0, "vpsrldq xmm{tmp}, xmm{tmp}, 8").unwrap();
+            }
+            writeln!(self.0, "vadds{dtype} xmm{xmm}, xmm{xmm}, xmm{tmp}").unwrap();
         }
     }
 
@@ -308,6 +359,45 @@ pub mod x86_64 {
             this.writeln(&format!("2{label}0:"));
             if_false(this);
             this.writeln(&format!("2{label}1:"));
+        }
+
+        fn vre_im(&mut self, re: usize, im: usize) {
+            if self.is_cplx() {
+                match self.1 {
+                    DType::F64 => {
+                        writeln!(self.0, "vunpckhpd zmm{im}, zmm{re}, zmm{re}").unwrap();
+                        writeln!(self.0, "vunpcklpd zmm{re}, zmm{re}, zmm{re}").unwrap();
+                    }
+                    DType::F32 => {
+                        writeln!(self.0, "vmovshdup zmm{im}, zmm{re}").unwrap();
+                        writeln!(self.0, "vmovsldup zmm{re}, zmm{re}").unwrap();
+                    }
+                }
+            }
+        }
+
+        fn vreduce(&mut self, xmm: usize, tmp: usize) {
+            let dtype = self.1;
+            writeln!(self.0, "vextractf64x4 ymm{tmp}, zmm{xmm}, 1").unwrap();
+            writeln!(self.0, "vaddp{dtype} ymm{xmm}, ymm{xmm}, ymm{tmp}").unwrap();
+
+            writeln!(self.0, "vextractf64x2 xmm{tmp}, ymm{xmm}, 1").unwrap();
+            writeln!(self.0, "vaddp{dtype} xmm{xmm}, xmm{xmm}, xmm{tmp}").unwrap();
+
+            if dtype.size() == 8 && self.is_cplx() {
+                return;
+            }
+
+            writeln!(self.0, "vunpckhpd xmm{tmp}, xmm{xmm}, xmm{xmm}").unwrap();
+            if dtype.size() == 4 {
+                writeln!(self.0, "vaddp{dtype} xmm{xmm}, xmm{xmm}, xmm{tmp}").unwrap();
+                if self.is_cplx() {
+                    return;
+                }
+                writeln!(self.0, "vunpcklps xmm{tmp}, xmm{xmm}, xmm{xmm}").unwrap();
+                writeln!(self.0, "vpsrldq xmm{tmp}, xmm{tmp}, 8").unwrap();
+            }
+            writeln!(self.0, "vadds{dtype} xmm{xmm}, xmm{xmm}, xmm{tmp}").unwrap();
         }
     }
 
@@ -454,21 +544,10 @@ pub mod x86_64 {
         fn vzero(&mut self, xmm: usize);
         fn vxor(&mut self, dst: usize, src: usize);
         fn vmov(&mut self, dst: usize, src: usize);
+
+        fn vre_im(&mut self, re: usize, im: usize);
+        fn vreduce(&mut self, xmm: usize, tmp: usize);
     }
-
-    const DEPTH: Reg = Reg::Rax;
-    const LHS_CS: Reg = Reg::Rdi;
-    const RHS_RS: Reg = Reg::Rcx;
-    const RHS_CS: Reg = Reg::Rdx;
-    const DST_CS: Reg = Reg::Rsi;
-    const TOP_MASK_PTR: Reg = Reg::Rbx;
-    const BOT_MASK_PTR: Reg = Reg::Rbp;
-    const ALPHA_PTR: Reg = Reg::R8;
-
-    const LHS_PTR: Reg = Reg::R9;
-    const RHS_PTR: Reg = Reg::R10;
-    const DST_PTR: Reg = Reg::R11;
-    const FLAGS: Reg = Reg::R12;
 
     pub fn microkernel(ctx: &mut dyn KernelCtx, m: usize, n: usize) {
         ctx.branch_bit(
@@ -675,7 +754,6 @@ pub mod x86_64 {
                             offset: ctx.unit_size(),
                         };
                         ctx.vbroadcast(rhs, mem);
-                        // ctx.writeln("int3");
 
                         for i in 0..m {
                             let lhs = i + m * n;
@@ -690,7 +768,7 @@ pub mod x86_64 {
 
                 ctx.add(LHS_PTR, LHS_CS);
                 for tmp in tmp {
-                    ctx.add(*tmp, RHS_RS);
+                    ctx.add(*tmp, VERTICAL_RHS_RS);
                 }
             };
 
@@ -729,7 +807,6 @@ pub mod x86_64 {
                     &mut |_| {},
                 );
 
-                // ctx.writeln("int3");
                 for i in 0..m * n {
                     ctx.vxor(i, sign);
                 }
@@ -861,6 +938,445 @@ pub mod x86_64 {
         ctx.pop(tmp1);
         ctx.pop(tmp0);
     }
+
+    pub fn hkernel(ctx: &mut dyn KernelCtx, m: usize, n: usize, triu: bool) {
+        fn setup_cs(ctx: &mut dyn KernelCtx, tmp: &[Reg], cs: Reg) {
+            for i in 1..tmp.len() {
+                ctx.lea(
+                    tmp[i],
+                    Mem {
+                        addr: tmp[i - 1],
+                        index: Some(cs),
+                        scale: 2,
+                        offset: 0,
+                    },
+                );
+            }
+        }
+
+        assert!(m <= 4);
+        assert!(m <= 4);
+        assert!(m * n + m + 4 < ctx.n_regs());
+
+        let tmp0 = Reg::R13;
+        let tmp1 = Reg::R14;
+
+        ctx.push(tmp0);
+        ctx.push(tmp1);
+        ctx.push(DEPTH);
+        ctx.push(LHS_PTR);
+        ctx.push(RHS_PTR);
+        ctx.push(LHS_CS);
+
+        let tmp_lhs = &[LHS_PTR, tmp0];
+        let tmp_rhs = &[RHS_PTR, tmp1];
+        let tmp_lhs = &tmp_lhs[..1 + (m - 1) / 2];
+        let tmp_rhs = &tmp_rhs[..1 + (n - 1) / 2];
+
+        setup_cs(ctx, tmp_lhs, LHS_CS);
+        setup_cs(ctx, tmp_rhs, RHS_CS);
+
+        ctx.vzero(0);
+        for i in 1..m * n {
+            ctx.vmov(i, 0);
+        }
+
+        let top_mask = if ctx.has_bitmask() {
+            1
+        } else {
+            m * n + 2 * m + 1
+        };
+        let bot_mask = if ctx.has_bitmask() {
+            2
+        } else {
+            m * n + 2 * m + 2
+        };
+
+        ctx.vload_mask(
+            top_mask,
+            Mem {
+                addr: TOP_MASK_PTR,
+                ..Default::default()
+            },
+        );
+        ctx.vload_mask(
+            bot_mask,
+            Mem {
+                addr: BOT_MASK_PTR,
+                ..Default::default()
+            },
+        );
+
+        let size = ctx.unit_size() * if ctx.is_cplx() { 2 } else { 1 };
+
+        let body = |ctx: &mut dyn KernelCtx, conj: bool| {
+            let rhs = m * n + 2 * m;
+            ctx.writeln(&format!("cmp {DEPTH}, {}", ctx.reg_size() / size,));
+            ctx.writeln("jle 333f");
+            {
+                ctx.writeln(&format!("add {DEPTH}, {}", ctx.reg_size() / size - 1,));
+                ctx.writeln(&format!("shr {DEPTH}, {}", (ctx.reg_size() / size).ilog2(),));
+                ctx.writeln(&format!("sub {DEPTH}, 2"));
+
+                for i in 0..m {
+                    ctx.vmaskload(
+                        top_mask,
+                        m * n + 2 * i,
+                        Mem {
+                            addr: tmp_lhs[i / 2],
+                            index: [None, Some(LHS_CS)][i % 2],
+                            scale: 1,
+                            offset: 0,
+                        },
+                    );
+                }
+                for i in 0..m {
+                    ctx.vre_im(m * n + 2 * i, m * n + 2 * i + 1);
+                }
+                for j in 0..n {
+                    let m = if triu { j + 1 } else { m };
+
+                    ctx.vmaskload(
+                        top_mask,
+                        rhs,
+                        Mem {
+                            addr: tmp_rhs[j / 2],
+                            index: [None, Some(RHS_CS)][j % 2],
+                            scale: 1,
+                            offset: 0,
+                        },
+                    );
+                    for i in 0..m {
+                        if conj {
+                            ctx.vfmadd_conj(i + j * m, m * n + 2 * i, rhs);
+                        } else {
+                            ctx.vfmadd(i + j * m, m * n + 2 * i, rhs);
+                        }
+                    }
+                    if ctx.is_cplx() {
+                        ctx.vswap(rhs);
+                        for i in 0..m {
+                            if conj {
+                                ctx.vfmadd_conj(i + j * m, m * n + 2 * i + 1, rhs);
+                            } else {
+                                ctx.vfmadd(i + j * m, m * n + 2 * i + 1, rhs);
+                            }
+                        }
+                    }
+                }
+
+                for x in tmp_lhs.iter().chain(tmp_rhs) {
+                    ctx.writeln(&format!("add {x}, {}", ctx.reg_size()));
+                }
+
+                ctx.loop_(0, DEPTH, &mut |ctx| {
+                    for i in 0..m {
+                        ctx.vload(
+                            m * n + 2 * i,
+                            Mem {
+                                addr: tmp_lhs[i / 2],
+                                index: [None, Some(LHS_CS)][i % 2],
+                                scale: 1,
+                                offset: 0,
+                            },
+                        );
+                    }
+                    for i in 0..m {
+                        ctx.vre_im(m * n + 2 * i, m * n + 2 * i + 1);
+                    }
+                    for j in 0..n {
+                        let m = if triu { j + 1 } else { m };
+
+                        ctx.vload(
+                            rhs,
+                            Mem {
+                                addr: tmp_rhs[j / 2],
+                                index: [None, Some(RHS_CS)][j % 2],
+                                scale: 1,
+                                offset: 0,
+                            },
+                        );
+                        for i in 0..m {
+                            if conj {
+                                ctx.vfmadd_conj(i + j * m, m * n + 2 * i, rhs);
+                            } else {
+                                ctx.vfmadd(i + j * m, m * n + 2 * i, rhs);
+                            }
+                        }
+                        if ctx.is_cplx() {
+                            ctx.vswap(rhs);
+                            for i in 0..m {
+                                if conj {
+                                    ctx.vfmadd_conj(i + j * m, m * n + 2 * i + 1, rhs);
+                                } else {
+                                    ctx.vfmadd(i + j * m, m * n + 2 * i + 1, rhs);
+                                }
+                            }
+                        }
+                    }
+                    for x in tmp_lhs.iter().chain(tmp_rhs) {
+                        ctx.writeln(&format!("add {x}, {}", ctx.reg_size()));
+                    }
+                });
+
+                for i in 0..m {
+                    ctx.vmaskload(
+                        bot_mask,
+                        m * n + 2 * i,
+                        Mem {
+                            addr: tmp_lhs[i / 2],
+                            index: [None, Some(LHS_CS)][i % 2],
+                            scale: 1,
+                            offset: 0,
+                        },
+                    );
+                }
+                for i in 0..m {
+                    ctx.vre_im(m * n + 2 * i, m * n + 2 * i + 1);
+                }
+                for j in 0..n {
+                    let m = if triu { j + 1 } else { m };
+                    ctx.vmaskload(
+                        bot_mask,
+                        rhs,
+                        Mem {
+                            addr: tmp_rhs[j / 2],
+                            index: [None, Some(RHS_CS)][j % 2],
+                            scale: 1,
+                            offset: 0,
+                        },
+                    );
+                    for i in 0..m {
+                        if conj {
+                            ctx.vfmadd_conj(i + j * m, m * n + 2 * i, rhs);
+                        } else {
+                            ctx.vfmadd(i + j * m, m * n + 2 * i, rhs);
+                        }
+                    }
+                    if ctx.is_cplx() {
+                        ctx.vswap(rhs);
+                        for i in 0..m {
+                            if conj {
+                                ctx.vfmadd_conj(i + j * m, m * n + 2 * i + 1, rhs);
+                            } else {
+                                ctx.vfmadd(i + j * m, m * n + 2 * i + 1, rhs);
+                            }
+                        }
+                    }
+                }
+            }
+            ctx.writeln("jmp 334f");
+            {
+                ctx.writeln("333:");
+                ctx.vand_mask(top_mask, bot_mask);
+                for i in 0..m {
+                    ctx.vmaskload(
+                        top_mask,
+                        m * n + 2 * i,
+                        Mem {
+                            addr: tmp_lhs[i / 2],
+                            index: [None, Some(LHS_CS)][i % 2],
+                            scale: 1,
+                            offset: 0,
+                        },
+                    );
+                }
+                for i in 0..m {
+                    ctx.vre_im(m * n + 2 * i, m * n + 2 * i + 1);
+                }
+                for j in 0..n {
+                    let m = if triu { j + 1 } else { m };
+                    ctx.vmaskload(
+                        top_mask,
+                        rhs,
+                        Mem {
+                            addr: tmp_rhs[j / 2],
+                            index: [None, Some(RHS_CS)][j % 2],
+                            scale: 1,
+                            offset: 0,
+                        },
+                    );
+                    for i in 0..m {
+                        if conj {
+                            ctx.vfmadd_conj(i + j * m, m * n + 2 * i, rhs);
+                        } else {
+                            ctx.vfmadd(i + j * m, m * n + 2 * i, rhs);
+                        }
+                    }
+                    if ctx.is_cplx() {
+                        ctx.vswap(rhs);
+                        for i in 0..m {
+                            if conj {
+                                ctx.vfmadd_conj(i + j * m, m * n + 2 * i + 1, rhs);
+                            } else {
+                                ctx.vfmadd(i + j * m, m * n + 2 * i + 1, rhs);
+                            }
+                        }
+                    }
+                }
+            }
+            ctx.writeln("334:");
+        };
+
+        let nbits = ctx.unit_size() * 8;
+        let vreg = ctx.vreg();
+
+        if ctx.is_cplx() {
+            let sign = m * n + m;
+            ctx.branch_bit(
+                1,
+                3,
+                FLAGS,
+                &mut |ctx| {
+                    body(ctx, true);
+                    ctx.writeln(&format!(
+                        "vmovupd {vreg}{sign}, [rip + LIBFAER_GEMM_COMPLEX{nbits}_MASK_REAL]"
+                    ));
+                },
+                &mut |ctx| {
+                    body(ctx, false);
+                    ctx.vzero(sign);
+                },
+            );
+
+            ctx.branch_bit(
+                    1,
+                    4,
+                    FLAGS,
+                    &mut |ctx| {
+                        ctx.writeln(&format!(
+                            "vorpd {vreg}{sign}, {vreg}{sign}, [rip + LIBFAER_GEMM_COMPLEX{nbits}_MASK_IMAG]"
+                        ));
+                    },
+                    &mut |_| {},
+                );
+
+            for i in 0..m * n {
+                ctx.vxor(i, sign);
+            }
+        } else {
+            body(ctx, false);
+        }
+
+        let tmp = [DST_PTR, LHS_PTR, RHS_PTR, tmp0];
+        setup_cs(ctx, &tmp[..tmp_lhs.len()], HORIZONTAL_DST_RS);
+        for i in 0..tmp_lhs.len() {
+            let tmp = [tmp[i], tmp[i + 2]];
+            setup_cs(ctx, &tmp[..tmp_rhs.len()], DST_CS);
+        }
+        ctx.lea(
+            LHS_CS,
+            Mem {
+                addr: DST_CS,
+                index: Some(HORIZONTAL_DST_RS),
+                scale: 1,
+                offset: 0,
+            },
+        );
+
+        let alpha = m * n;
+        let alpha_imag = m * n + 1;
+        let dst = m * n + 2;
+        ctx.vbroadcast(
+            alpha,
+            Mem {
+                addr: ALPHA_PTR,
+                index: None,
+                scale: 0,
+                offset: 0,
+            },
+        );
+
+        if ctx.is_cplx() {
+            ctx.vbroadcast(
+                alpha_imag,
+                Mem {
+                    addr: ALPHA_PTR,
+                    index: None,
+                    scale: 0,
+                    offset: ctx.unit_size(),
+                },
+            );
+
+            for i in 0..m * n {
+                ctx.vzero(dst);
+                ctx.vfmadd_conj(dst, i, alpha);
+                ctx.vswap(i);
+                ctx.vfmadd_conj(dst, i, alpha_imag);
+                ctx.vmov(i, dst);
+            }
+
+            let sign = dst;
+            ctx.writeln(&format!(
+                "vmovupd {vreg}{sign}, [rip + LIBFAER_GEMM_COMPLEX{nbits}_MASK_REAL]"
+            ));
+            for i in 0..m * n {
+                ctx.vxor(i, sign);
+            }
+        } else {
+            for i in 0..m * n {
+                ctx.vmul(i, i, alpha);
+            }
+        }
+
+        let update = |ctx: &mut dyn KernelCtx, load: bool| {
+            for j in 0..n {
+                let m = if triu { j + 1 } else { m };
+                for i in 0..m {
+                    let addr = tmp[i / 2 + 2 * (j / 2)];
+                    let (index, scale) = match (i % 2, j % 2) {
+                        (0, 0) => (None, 0),
+                        (1, 0) => (Some(HORIZONTAL_DST_RS), 1),
+                        (0, 1) => (Some(DST_CS), 1),
+                        (1, 1) => (Some(LHS_CS), 1),
+                        _ => unreachable!(),
+                    };
+                    let mem = Mem {
+                        addr,
+                        index,
+                        scale,
+                        offset: 0,
+                    };
+
+                    let instr = match (ctx.is_cplx(), ctx.unit_size()) {
+                        (false, 4) => "vmovss",
+                        (false, 8) => "vmovsd",
+                        (true, 4) => "vmovsd",
+                        (true, 8) => "vmovupd",
+                        _ => unreachable!(),
+                    };
+
+                    if load {
+                        ctx.writeln(&format!("{instr} xmm{dst}, {mem}"));
+                        ctx.vload(dst, mem);
+                        ctx.vadd(dst, dst, i + m * j);
+                    } else {
+                        ctx.vmov(dst, i + m * j);
+                    }
+
+                    ctx.vreduce(dst, i + m * j);
+                    ctx.writeln(&format!("{instr} {mem}, xmm{dst}"));
+                }
+            }
+        };
+
+        ctx.branch_bit(
+            1, //
+            0,
+            FLAGS,
+            &mut |ctx| update(ctx, true),
+            &mut |ctx| update(ctx, false),
+        );
+
+        ctx.pop(LHS_CS);
+        ctx.pop(RHS_PTR);
+        ctx.pop(LHS_PTR);
+        ctx.pop(DEPTH);
+        ctx.pop(tmp1);
+        ctx.pop(tmp0);
+        ctx.vzeroupper();
+        ctx.ret();
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -885,7 +1401,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(codegen, ".globl {name}")?;
                         writeln!(codegen, "{name}:")?;
 
-                        let mut ctx = RealAvx(String::new(), dtype, domain);
+                        let mut ctx = x86_64::RealAvx(String::new(), dtype, domain);
                         x86_64::microkernel(&mut ctx, m, n);
                         writeln!(codegen, "{}", ctx.0)?;
                         writeln!(bindings, "pub fn {name}();")?;
@@ -897,6 +1413,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(
                     bindings,
                     "#[allow(non_upper_case_globals)] pub const UKR_AVX_{domain:?}_{dtype:?}: &[[unsafe extern fn(); {max_m}]; {max_n}] = &"
+                )?;
+                writeln!(bindings, "[")?;
+                for n in 0..max_n {
+                    writeln!(bindings, "[")?;
+                    for m in 0..max_m {
+                        writeln!(bindings, "{},", names[m + max_m * n])?;
+                    }
+                    writeln!(bindings, "],")?;
+                }
+                writeln!(bindings, "];")?;
+            }
+            {
+                let max_n = 2;
+                let max_m = 2;
+
+                writeln!(bindings, "extern {{")?;
+                let mut names = vec![];
+                for triu in [false] {
+                    for j in 0..max_n {
+                        let n = j + 1;
+                        for i in 0..max_m {
+                            let m = i + 1;
+
+                            let name = format!(
+                                "libfaer_gemm_reduce_{domain:?}_{dtype:?}_avx_{m}x{n}{}",
+                                if triu { "_tri_up" } else { "" }
+                            );
+                            writeln!(codegen, ".globl {name}")?;
+                            writeln!(codegen, "{name}:")?;
+
+                            let mut ctx = x86_64::RealAvx(String::new(), dtype, domain);
+                            x86_64::hkernel(&mut ctx, m, n, triu);
+                            writeln!(codegen, "{}", ctx.0)?;
+                            writeln!(bindings, "pub fn {name}();")?;
+                            names.push(name);
+                        }
+                    }
+                }
+                writeln!(bindings, "}}")?;
+                writeln!(
+                    bindings,
+                    "#[allow(non_upper_case_globals)] pub const HKR_AVX_{domain:?}_{dtype:?}: &[[unsafe extern fn(); {max_m}]; {max_n}] = &"
                 )?;
                 writeln!(bindings, "[")?;
                 for n in 0..max_n {
@@ -925,7 +1483,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(codegen, ".globl {name}")?;
                         writeln!(codegen, "{name}:")?;
 
-                        let mut ctx = RealAvx512(String::new(), dtype, domain);
+                        let mut ctx = x86_64::RealAvx512(String::new(), dtype, domain);
                         x86_64::microkernel(&mut ctx, m, n);
                         writeln!(codegen, "{}", ctx.0)?;
                         writeln!(bindings, "pub fn {name}();")?;
@@ -937,6 +1495,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(
                     bindings,
                     "#[allow(non_upper_case_globals)] pub const UKR_AVX512_{domain:?}_{dtype:?}: &[[unsafe extern fn(); {max_m}]; {max_n}] = &"
+                )?;
+                writeln!(bindings, "[")?;
+                for n in 0..max_n {
+                    writeln!(bindings, "[")?;
+                    for m in 0..max_m {
+                        writeln!(bindings, "{},", names[m + max_m * n])?;
+                    }
+                    writeln!(bindings, "],")?;
+                }
+                writeln!(bindings, "];")?;
+            }
+
+            {
+                let max_n = 4;
+                let max_m = 4;
+
+                writeln!(bindings, "extern {{")?;
+                let mut names = vec![];
+                for triu in [false] {
+                    for j in 0..max_n {
+                        let n = j + 1;
+                        for i in 0..max_m {
+                            let m = i + 1;
+
+                            let name = format!(
+                                "libfaer_gemm_reduce_{domain:?}_{dtype:?}_avx512_{m}x{n}{}",
+                                if triu { "_tri_up" } else { "" }
+                            );
+                            writeln!(codegen, ".globl {name}")?;
+                            writeln!(codegen, "{name}:")?;
+
+                            let mut ctx = x86_64::RealAvx512(String::new(), dtype, domain);
+                            x86_64::hkernel(&mut ctx, m, n, triu);
+                            writeln!(codegen, "{}", ctx.0)?;
+                            writeln!(bindings, "pub fn {name}();")?;
+                            names.push(name);
+                        }
+                    }
+                }
+                writeln!(bindings, "}}")?;
+                writeln!(
+                    bindings,
+                    "#[allow(non_upper_case_globals)] pub const HKR_AVX512_{domain:?}_{dtype:?}: &[[unsafe extern fn(); {max_m}]; {max_n}] = &"
                 )?;
                 writeln!(bindings, "[")?;
                 for n in 0..max_n {
