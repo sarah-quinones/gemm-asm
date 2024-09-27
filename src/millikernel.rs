@@ -54,34 +54,35 @@ static LIBFAER_GEMM_COMPLEX32_MASK_IMAG: __m512d = unsafe {
 };
 
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub struct Plan {
     // 0
-    head_mask: *const (),
+    pub head_mask: *const (),
     // 8
-    tail_mask: *const (),
+    pub tail_mask: *const (),
     // 16
-    top_left: unsafe extern "C" fn(),
+    pub top_left: unsafe extern "C" fn(),
     // 24
-    top_right: unsafe extern "C" fn(),
+    pub top_right: unsafe extern "C" fn(),
     // 32
-    mid_left: unsafe extern "C" fn(),
+    pub mid_left: unsafe extern "C" fn(),
     // 40
-    mid_right: unsafe extern "C" fn(),
+    pub mid_right: unsafe extern "C" fn(),
     // 48
-    bot_left: unsafe extern "C" fn(),
+    pub bot_left: unsafe extern "C" fn(),
     // 56
-    bot_right: unsafe extern "C" fn(),
+    pub bot_right: unsafe extern "C" fn(),
 
     // 64
-    mid_height: usize,
+    pub mid_height: usize,
     // 72
-    left_width: usize,
+    pub left_width: usize,
     // 80
-    flags: usize,
+    pub flags: usize,
     // 88
-    do_nothing: bool,
+    pub do_nothing: bool,
     // 89
-    two_or_more: bool,
+    pub two_or_more: bool,
 
     pub mr: usize,
     pub nr: usize,

@@ -167,6 +167,7 @@ pub mod x86_64 {
             counter: Reg,
             body: &mut dyn FnMut(&mut dyn KernelCtx),
         ) {
+            self.writeln(".align 32");
             self.writeln(&format!("2{label}1:"));
             let this = self;
             body(this);
@@ -337,6 +338,7 @@ pub mod x86_64 {
             counter: Reg,
             body: &mut dyn FnMut(&mut dyn KernelCtx),
         ) {
+            self.writeln(".align 32");
             self.writeln(&format!("2{label}1:"));
             let this = self;
             body(this);
@@ -1398,6 +1400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let m = i + 1;
 
                         let name = format!("libfaer_gemm_{domain:?}_{dtype:?}_avx_{m}x{n}");
+                        writeln!(codegen, ".align 32")?;
                         writeln!(codegen, ".globl {name}")?;
                         writeln!(codegen, "{name}:")?;
 
@@ -1440,6 +1443,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "libfaer_gemm_reduce_{domain:?}_{dtype:?}_avx_{m}x{n}{}",
                                 if triu { "_tri_up" } else { "" }
                             );
+                            writeln!(codegen, ".align 32")?;
                             writeln!(codegen, ".globl {name}")?;
                             writeln!(codegen, "{name}:")?;
 
@@ -1480,6 +1484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let m = i + 1;
 
                         let name = format!("libfaer_gemm_{domain:?}_{dtype:?}_avx512_{m}x{n}");
+                        writeln!(codegen, ".align 32")?;
                         writeln!(codegen, ".globl {name}")?;
                         writeln!(codegen, "{name}:")?;
 
@@ -1523,6 +1528,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "libfaer_gemm_reduce_{domain:?}_{dtype:?}_avx512_{m}x{n}{}",
                                 if triu { "_tri_up" } else { "" }
                             );
+                            writeln!(codegen, ".align 32")?;
                             writeln!(codegen, ".globl {name}")?;
                             writeln!(codegen, "{name}:")?;
 
