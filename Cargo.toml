@@ -9,6 +9,7 @@ edition = "2021"
 nightly = []
 
 [dev-dependencies]
+aligned-vec = "0.6.1"
 diol = { version = "0.8.3", default-features = false }
 num-complex = "0.4.6"
 rand = "0.8.5"
@@ -17,3 +18,5 @@ rand = "0.8.5"
 name = "bench"
 harness = false
 
+[profile.dev]
+opt-level = 3

@@ -222,6 +222,35 @@ pub unsafe fn avx512_transpose_64x8(values: [[u64; 8]; 8]) -> [[u64; 8]; 8] {
     ])
 }
 
+#[inline(always)]
+pub unsafe fn avx_transpose_128x2(values: [[u128; 2]; 2]) -> [[u128; 2]; 2] {
+    let x: [__m256i; 2] = transmute(values);
+
+    transmute([
+        _mm256_permute2x128_si256::<0b00100000>(x[0], x[1]),
+        _mm256_permute2x128_si256::<0b00110001>(x[0], x[1]),
+    ])
+}
+
+#[inline(always)]
+pub unsafe fn avx512_transpose_128x4(values: [[u128; 4]; 4]) -> [[u128; 4]; 4] {
+    let x: [__m512i; 4] = transmute(values);
+
+    let x = [
+        _mm512_shuffle_i64x2::<0b10001000>(x[0], x[1]),
+        _mm512_shuffle_i64x2::<0b11011101>(x[0], x[1]),
+        _mm512_shuffle_i64x2::<0b10001000>(x[2], x[3]),
+        _mm512_shuffle_i64x2::<0b11011101>(x[2], x[3]),
+    ];
+
+    transmute([
+        _mm512_shuffle_i64x2::<0b10001000>(x[0], x[2]),
+        _mm512_shuffle_i64x2::<0b10001000>(x[1], x[3]),
+        _mm512_shuffle_i64x2::<0b11011101>(x[0], x[2]),
+        _mm512_shuffle_i64x2::<0b11011101>(x[1], x[3]),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use core::array::from_fn;
@@ -358,6 +387,44 @@ mod tests {
         let mut target = x;
         for i in 0..8 {
             for j in 0..8 {
+                target[i][j] = x[j][i];
+            }
+        }
+
+        assert_eq!(xt, target);
+    }
+
+    #[test]
+    fn test_transpose_128x2() {
+        if !std::is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let x = from_fn(|_| from_fn(|_| random()));
+        let xt = unsafe { avx_transpose_128x2(x) };
+
+        let mut target = x;
+        for i in 0..2 {
+            for j in 0..2 {
+                target[i][j] = x[j][i];
+            }
+        }
+
+        assert_eq!(xt, target);
+    }
+
+    #[test]
+    fn test_transpose_128x4() {
+        if !std::is_x86_feature_detected!("avx512f") {
+            return;
+        }
+
+        let x = from_fn(|_| from_fn(|_| random::<u8>() as u128));
+        let xt = unsafe { avx512_transpose_128x4(x) };
+
+        let mut target = x;
+        for i in 0..4 {
+            for j in 0..4 {
                 target[i][j] = x[j][i];
             }
         }
