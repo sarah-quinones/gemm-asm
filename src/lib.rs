@@ -6,4 +6,5 @@
 pub mod millikernel;
 pub mod transpose;
 
+pub mod cache;
 pub mod packing;

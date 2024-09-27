@@ -4,7 +4,7 @@ use core::mem::{transmute, zeroed};
 #[cfg(feature = "nightly")]
 #[target_feature(enable = "avx512f")]
 pub unsafe fn pack_avx512_u32_col_major(
-    dst: &mut [u32],
+    dst: *mut u32,
     src: *const u32,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -25,7 +25,7 @@ pub unsafe fn pack_avx512_u32_col_major(
     }
     debug_assert!(rows_to_skip < 16);
 
-    let mut dst = dst.as_mut_ptr() as *mut __m512i;
+    let mut dst = dst as *mut __m512i;
     let mut src = src as *const __m512i;
 
     if rows_to_skip == 0 && total_nrows == 32 {
@@ -93,7 +93,7 @@ pub unsafe fn pack_avx512_u32_col_major(
 
 #[cfg(feature = "nightly")]
 pub unsafe fn pack_avx512_u64_col_major(
-    dst: &mut [u64],
+    dst: *mut u64,
     src: *const u64,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -101,9 +101,8 @@ pub unsafe fn pack_avx512_u64_col_major(
     ncols: usize,
     rows_to_skip: usize,
 ) {
-    let len = dst.len();
     pack_avx512_u32_col_major(
-        core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u32, 2 * len),
+        dst as *mut u32,
         src as *const u32,
         src_byte_stride,
         dst_byte_stride,
@@ -115,7 +114,7 @@ pub unsafe fn pack_avx512_u64_col_major(
 
 #[cfg(feature = "nightly")]
 pub unsafe fn pack_avx512_u128_col_major(
-    dst: &mut [u128],
+    dst: *mut u128,
     src: *const u128,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -123,9 +122,8 @@ pub unsafe fn pack_avx512_u128_col_major(
     ncols: usize,
     rows_to_skip: usize,
 ) {
-    let len = dst.len();
     pack_avx512_u32_col_major(
-        core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u32, 4 * len),
+        dst as *mut u32,
         src as *const u32,
         src_byte_stride,
         dst_byte_stride,
@@ -137,7 +135,7 @@ pub unsafe fn pack_avx512_u128_col_major(
 
 #[target_feature(enable = "avx2")]
 pub unsafe fn pack_avx_u32_col_major(
-    dst: &mut [u32],
+    dst: *mut u32,
     src: *const u32,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -158,7 +156,7 @@ pub unsafe fn pack_avx_u32_col_major(
     }
 
     debug_assert!(rows_to_skip < 8);
-    let mut dst = dst.as_mut_ptr() as *mut __m256i;
+    let mut dst = dst as *mut __m256i;
     let mut src = src as *const __m256i;
     if rows_to_skip == 0 && total_nrows == 16 {
         for _ in 0..ncols {
@@ -225,7 +223,7 @@ pub unsafe fn pack_avx_u32_col_major(
 
 #[target_feature(enable = "avx2")]
 pub unsafe fn pack_avx_half_u32_col_major(
-    dst: &mut [u32],
+    dst: *mut u32,
     src: *const u32,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -233,7 +231,7 @@ pub unsafe fn pack_avx_half_u32_col_major(
     ncols: usize,
     rows_to_skip: usize,
 ) {
-    let mut dst = dst.as_mut_ptr() as *mut __m128i;
+    let mut dst = dst as *mut __m128i;
     let mut src = src as *const __m128i;
 
     if rows_to_skip == 0 && total_nrows == 12 {
@@ -257,7 +255,7 @@ pub unsafe fn pack_avx_half_u32_col_major(
 }
 
 pub unsafe fn pack_avx_u64_col_major(
-    dst: &mut [u64],
+    dst: *mut u64,
     src: *const u64,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -265,9 +263,8 @@ pub unsafe fn pack_avx_u64_col_major(
     ncols: usize,
     rows_to_skip: usize,
 ) {
-    let len = dst.len();
     pack_avx_u32_col_major(
-        core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u32, 2 * len),
+        dst as *mut u32,
         src as *const u32,
         src_byte_stride,
         dst_byte_stride,
@@ -278,7 +275,7 @@ pub unsafe fn pack_avx_u64_col_major(
 }
 
 pub unsafe fn pack_avx_u128_col_major(
-    dst: &mut [u128],
+    dst: *mut u128,
     src: *const u128,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -286,9 +283,8 @@ pub unsafe fn pack_avx_u128_col_major(
     ncols: usize,
     rows_to_skip: usize,
 ) {
-    let len = dst.len();
     pack_avx_u32_col_major(
-        core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u32, 4 * len),
+        dst as *mut u32,
         src as *const u32,
         src_byte_stride,
         dst_byte_stride,
@@ -301,7 +297,7 @@ pub unsafe fn pack_avx_u128_col_major(
 #[cfg(feature = "nightly")]
 #[target_feature(enable = "avx512f")]
 pub unsafe fn pack_avx512_u32_row_major(
-    dst: &mut [u32],
+    dst: *mut u32,
     src: *const u32,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -604,7 +600,7 @@ pub unsafe fn pack_avx512_u32_row_major(
     };
 
     if dst_byte_stride == 128 {
-        let dst = dst.as_mut_ptr();
+        let dst = dst;
         imp::<16>(
             total_ncols,
             tail_mask,
@@ -615,7 +611,7 @@ pub unsafe fn pack_avx512_u32_row_major(
             total_nrows,
         );
     } else if dst_byte_stride == 64 {
-        let dst = dst.as_mut_ptr();
+        let dst = dst;
         imp::<0>(
             total_ncols,
             tail_mask,
@@ -642,7 +638,7 @@ pub unsafe fn pack_avx512_u32_row_major(
 #[cfg(feature = "nightly")]
 #[target_feature(enable = "avx512f")]
 pub unsafe fn pack_avx512_u64_row_major(
-    dst: &mut [u64],
+    dst: *mut u64,
     src: *const u64,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -911,7 +907,7 @@ pub unsafe fn pack_avx512_u64_row_major(
     let padded_ncols = (total_ncols + 7) / 8 * 8;
     let tail_len = padded_ncols - total_ncols;
 
-    let dst = dst.as_mut_ptr();
+    let dst = dst;
     let src = src;
 
     let tail_mask = if tail_len == 8 {
@@ -957,7 +953,7 @@ pub unsafe fn pack_avx512_u64_row_major(
 #[cfg(feature = "nightly")]
 #[target_feature(enable = "avx512f")]
 pub unsafe fn pack_avx512_u128_row_major(
-    dst: &mut [u128],
+    dst: *mut u128,
     src: *const u128,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -1080,7 +1076,7 @@ pub unsafe fn pack_avx512_u128_row_major(
         3
     };
 
-    let dst = dst.as_mut_ptr();
+    let dst = dst;
     imp(
         n,
         total_ncols,
@@ -1095,7 +1091,7 @@ pub unsafe fn pack_avx512_u128_row_major(
 
 #[target_feature(enable = "avx2")]
 pub unsafe fn pack_avx_u32_row_major(
-    dst: &mut [u32],
+    dst: *mut u32,
     src: *const u32,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -1361,7 +1357,7 @@ pub unsafe fn pack_avx_u32_row_major(
         }
     }
 
-    let dst = dst.as_mut_ptr();
+    let dst = dst;
     let src = src;
 
     let total_ncols = ncols;
@@ -1634,7 +1630,7 @@ pub unsafe fn pack_avx_u32_row_major(
 
 #[target_feature(enable = "avx2")]
 pub unsafe fn pack_avx_u64_row_major(
-    dst: &mut [u64],
+    dst: *mut u64,
     src: *const u64,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -1891,7 +1887,7 @@ pub unsafe fn pack_avx_u64_row_major(
     let padded_ncols = (total_ncols + 3) / 4 * 4;
     let tail_len = padded_ncols - total_ncols;
 
-    let dst = dst.as_mut_ptr();
+    let dst = dst;
     let src = src;
 
     let tail_mask = if tail_len == 4 {
@@ -1936,7 +1932,7 @@ pub unsafe fn pack_avx_u64_row_major(
 
 #[target_feature(enable = "avx2")]
 pub unsafe fn pack_avx_u128_row_major(
-    dst: &mut [u128],
+    dst: *mut u128,
     src: *const u128,
     src_byte_stride: isize,
     dst_byte_stride: isize,
@@ -2055,7 +2051,7 @@ pub unsafe fn pack_avx_u128_row_major(
         3
     };
 
-    let dst = dst.as_mut_ptr();
+    let dst = dst;
     imp(
         n,
         total_ncols,
@@ -2067,6 +2063,213 @@ pub unsafe fn pack_avx_u128_row_major(
         total_nrows,
     );
 }
+
+#[inline(never)]
+unsafe fn pack_impl(
+    dst: *mut (),
+    src: *const (),
+    src_rs: isize,
+    src_cs: isize,
+    dst_stride: isize,
+    dst_block_stride: isize,
+
+    rows_to_skip: usize,
+    block_nrows: usize,
+    block_ncols: usize,
+
+    full_nrows: usize,
+    full_ncols: usize,
+
+    pack: unsafe fn(
+        dst: *mut (),
+        src: *const (),
+        ncols: usize,
+        nrows: usize,
+        rows_to_skip: usize,
+        src_rs: isize,
+        src_cs: isize,
+        dst_stride: isize,
+    ),
+) {
+    let mut col = 0;
+
+    let mut src = src;
+    let mut dst = dst;
+    while col < full_ncols {
+        let col_bs = Ord::min(full_ncols - col, block_ncols);
+
+        let mut rows_to_skip = rows_to_skip;
+        let mut row = 0;
+        {
+            let mut src = src;
+            while row < full_nrows {
+                let row_bs = Ord::min(full_nrows - row, block_nrows);
+
+                pack(
+                    dst,
+                    src,
+                    col_bs,
+                    row_bs,
+                    rows_to_skip,
+                    src_rs,
+                    src_cs,
+                    dst_stride,
+                );
+
+                rows_to_skip = rows_to_skip.saturating_sub(row_bs);
+                src = src.wrapping_byte_offset(src_rs * row_bs as isize);
+                dst = dst.wrapping_byte_offset(dst_block_stride);
+                row += row_bs;
+            }
+        }
+
+        src = src.wrapping_byte_offset(src_cs * col_bs as isize);
+        col += col_bs;
+    }
+}
+
+unsafe fn pack_generic<T>(
+    dst: *mut (),
+    src: *const (),
+    ncols: usize,
+    nrows: usize,
+    rows_to_skip: usize,
+    src_rs: isize,
+    src_cs: isize,
+    dst_stride: isize,
+) {
+    let mut dst = dst as *mut T;
+    let mut src = src as *const T;
+    for _ in 0..ncols {
+        {
+            let mut dst = dst;
+            let mut src = src;
+            for i in 0..nrows {
+                if i >= rows_to_skip {
+                    dst.write_unaligned(src.read_unaligned());
+                }
+                dst = dst.wrapping_add(1);
+                src = src.wrapping_byte_offset(src_rs);
+            }
+        }
+        dst = dst.wrapping_byte_offset(dst_stride);
+        src = src.wrapping_byte_offset(src_cs);
+    }
+}
+
+macro_rules! pack_fn {
+    ($ty: ty, $name: ident, $colmajor: ident, $rowmajor: ident $(,)?) => {
+        pub unsafe fn $name(
+            dst: *mut (),
+            src: *const (),
+            src_rs: isize,
+            src_cs: isize,
+            dst_stride: isize,
+            dst_block_stride: isize,
+
+            rows_to_skip: usize,
+            block_nrows: usize,
+            block_ncols: usize,
+
+            full_nrows: usize,
+            full_ncols: usize,
+        ) {
+            let f = if src_rs == size_of::<$ty>() as isize {
+                |dst: *mut (),
+                 src: *const (),
+                 ncols: usize,
+                 nrows: usize,
+                 rows_to_skip: usize,
+                 _: isize,
+                 src_cs: isize,
+                 dst_stride: isize| {
+                    $colmajor(
+                        dst as *mut $ty,
+                        src as *const $ty,
+                        src_cs,
+                        dst_stride,
+                        nrows,
+                        ncols,
+                        rows_to_skip,
+                    )
+                }
+            } else if src_cs == size_of::<$ty>() as isize {
+                |dst: *mut (),
+                 src: *const (),
+                 ncols: usize,
+                 nrows: usize,
+                 rows_to_skip: usize,
+                 src_rs: isize,
+                 _: isize,
+                 dst_stride: isize| {
+                    $rowmajor(
+                        dst as *mut $ty,
+                        src as *const $ty,
+                        src_rs,
+                        dst_stride,
+                        nrows,
+                        ncols,
+                        rows_to_skip,
+                    )
+                }
+            } else {
+                pack_generic::<$ty>
+            };
+            pack_impl(
+                dst,
+                src,
+                src_rs,
+                src_cs,
+                dst_stride,
+                dst_block_stride,
+                rows_to_skip,
+                block_nrows,
+                block_ncols,
+                full_nrows,
+                full_ncols,
+                f,
+            );
+        }
+    };
+}
+
+pack_fn!(
+    u32,
+    pack_avx512_u32,
+    pack_avx512_u32_col_major,
+    pack_avx512_u32_row_major,
+);
+pack_fn!(
+    u64,
+    pack_avx512_u64,
+    pack_avx512_u64_col_major,
+    pack_avx512_u64_row_major,
+);
+pack_fn!(
+    u128,
+    pack_avx512_u128,
+    pack_avx512_u128_col_major,
+    pack_avx512_u128_row_major,
+);
+
+pack_fn!(
+    u32,
+    pack_avx_u32,
+    pack_avx_u32_col_major,
+    pack_avx_u32_row_major,
+);
+pack_fn!(
+    u64,
+    pack_avx_u64,
+    pack_avx_u64_col_major,
+    pack_avx_u64_row_major,
+);
+pack_fn!(
+    u128,
+    pack_avx_u128,
+    pack_avx_u128_col_major,
+    pack_avx_u128_row_major,
+);
 
 #[cfg(test)]
 mod tests {
@@ -2090,7 +2293,7 @@ mod tests {
 
                     unsafe {
                         pack_avx512_u32_row_major(
-                            &mut *dst,
+                            dst.as_mut_ptr(),
                             src.as_ptr(),
                             (n * size_of::<u32>()) as isize,
                             (m * size_of::<u32>()) as isize,
@@ -2128,7 +2331,7 @@ mod tests {
 
                     unsafe {
                         pack_avx512_u64_row_major(
-                            &mut *dst,
+                            dst.as_mut_ptr(),
                             src.as_ptr(),
                             (n * size_of::<u64>()) as isize,
                             (m * size_of::<u64>()) as isize,
@@ -2166,7 +2369,7 @@ mod tests {
 
                     unsafe {
                         pack_avx512_u128_row_major(
-                            &mut *dst,
+                            dst.as_mut_ptr(),
                             src.as_ptr(),
                             (n * size_of::<u128>()) as isize,
                             (m * size_of::<u128>()) as isize,
@@ -2203,7 +2406,7 @@ mod tests {
 
                     unsafe {
                         pack_avx_u32_row_major(
-                            &mut *dst,
+                            dst.as_mut_ptr(),
                             src.as_ptr(),
                             (n * size_of::<u32>()) as isize,
                             (m * size_of::<u32>()) as isize,
@@ -2240,7 +2443,7 @@ mod tests {
 
                     unsafe {
                         pack_avx_u64_row_major(
-                            &mut *dst,
+                            dst.as_mut_ptr(),
                             src.as_ptr(),
                             (n * size_of::<u64>()) as isize,
                             (m * size_of::<u64>()) as isize,
@@ -2277,7 +2480,7 @@ mod tests {
 
                     unsafe {
                         pack_avx_u128_row_major(
-                            &mut *dst,
+                            dst.as_mut_ptr(),
                             src.as_ptr(),
                             (n * size_of::<u128>()) as isize,
                             (m * size_of::<u128>()) as isize,
@@ -2314,7 +2517,7 @@ mod tests {
 
                     unsafe {
                         pack_avx_u128_col_major(
-                            &mut *dst,
+                            dst.as_mut_ptr(),
                             src.as_ptr(),
                             (m * size_of::<u128>()) as isize,
                             (m * size_of::<u128>()) as isize,
@@ -2352,7 +2555,7 @@ mod tests {
 
                     unsafe {
                         pack_avx512_u128_col_major(
-                            &mut *dst,
+                            dst.as_mut_ptr(),
                             src.as_ptr(),
                             (m * size_of::<u128>()) as isize,
                             (m * size_of::<u128>()) as isize,
@@ -2389,7 +2592,7 @@ mod tests {
 
                     unsafe {
                         pack_avx_u32_col_major(
-                            &mut *dst,
+                            dst.as_mut_ptr(),
                             src.as_ptr(),
                             (m * size_of::<u32>()) as isize,
                             (m * size_of::<u32>()) as isize,

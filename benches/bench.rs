@@ -44,7 +44,7 @@ fn pack_row_major(bencher: Bencher, n: usize) {
 
     bencher.bench(|| unsafe {
         packing::pack_avx512_u32_row_major(
-            dst,
+            dst.as_mut_ptr(),
             src.as_ptr(),
             (n * size_of::<f32>()) as isize,
             (m * size_of::<f32>()) as isize,
@@ -62,7 +62,7 @@ fn pack_col_major(bencher: Bencher, n: usize) {
 
     bencher.bench(|| unsafe {
         packing::pack_avx512_u32_col_major(
-            dst,
+            dst.as_mut_ptr(),
             src.as_ptr(),
             (n * size_of::<f32>()) as isize,
             (m * size_of::<f32>()) as isize,
