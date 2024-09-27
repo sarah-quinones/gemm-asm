@@ -232,6 +232,7 @@ pub unsafe fn avx_transpose_128x2(values: [[u128; 2]; 2]) -> [[u128; 2]; 2] {
     ])
 }
 
+#[cfg(feature = "nightly")]
 #[inline(always)]
 pub unsafe fn avx512_transpose_128x4(values: [[u128; 4]; 4]) -> [[u128; 4]; 4] {
     let x: [__m512i; 4] = transmute(values);

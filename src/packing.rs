@@ -2233,18 +2233,21 @@ macro_rules! pack_fn {
     };
 }
 
+#[cfg(feature = "nightly")]
 pack_fn!(
     u32,
     pack_avx512_u32,
     pack_avx512_u32_col_major,
     pack_avx512_u32_row_major,
 );
+#[cfg(feature = "nightly")]
 pack_fn!(
     u64,
     pack_avx512_u64,
     pack_avx512_u64_col_major,
     pack_avx512_u64_row_major,
 );
+#[cfg(feature = "nightly")]
 pack_fn!(
     u128,
     pack_avx512_u128,
