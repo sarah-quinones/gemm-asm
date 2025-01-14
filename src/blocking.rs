@@ -270,3 +270,204 @@ unsafe fn blocking_lhs(
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        cache,
+        millikernel::{self, Accum},
+        packing,
+    };
+    use aligned_vec::avec;
+    use rand::prelude::*;
+
+    #[test]
+    fn test_blocking() {
+        let rng = &mut StdRng::seed_from_u64(0);
+
+        for (m, n, k) in [
+            (16, 12, 1),
+            (16, 12, 16),
+            (16, 24, 16),
+            (1024, 1024, 32),
+            (1025, 1024, 32),
+            (1026, 1024, 32),
+            (1027, 1024, 32),
+            (1028, 1024, 32),
+            (1029, 1024, 32),
+            (1030, 1024, 32),
+            (1031, 1024, 32),
+            (1024, 1027, 32),
+            (1025, 1027, 32),
+            (1026, 1027, 32),
+            (1027, 1027, 32),
+            (1028, 1027, 32),
+            (1029, 1027, 32),
+            (1030, 1027, 32),
+            (1031, 1027, 32),
+        ] {
+            let mr = 16;
+            let nr = 12;
+
+            let mut outer_blocking = cache::kernel_params(m, n, k, mr, nr, size_of::<f64>());
+            outer_blocking.kc = Ord::min(16, k);
+
+            let lhs_stride = (mr * outer_blocking.kc) * size_of::<f64>();
+            let rhs_stride = (nr * outer_blocking.kc) * size_of::<f64>();
+
+            let top_l_plan = millikernel::f64_plan_avx512(
+                0,
+                outer_blocking.mc,
+                outer_blocking.nc,
+                Accum::Replace,
+            );
+            let bot_l_plan = millikernel::f64_plan_avx512(
+                0,
+                m % outer_blocking.mc,
+                outer_blocking.nc,
+                Accum::Replace,
+            );
+            let top_r_plan = millikernel::f64_plan_avx512(
+                0,
+                outer_blocking.mc,
+                n % outer_blocking.nc,
+                Accum::Replace,
+            );
+            let bot_r_plan = millikernel::f64_plan_avx512(
+                0,
+                m % outer_blocking.mc,
+                n % outer_blocking.nc,
+                Accum::Replace,
+            );
+
+            let dst = &mut *avec![0.0f64; m * n];
+            let unpacked_lhs = &mut *avec![1.0; m * k];
+            let unpacked_rhs = &mut *avec![1.0; n * k];
+            rng.fill(unpacked_lhs);
+            rng.fill(unpacked_rhs);
+
+            let target = &mut *avec![0.0; m * n];
+            for j in 0..n {
+                for i in 0..m {
+                    for depth in 0..k {
+                        target[i + m * j] +=
+                            unpacked_lhs[i + m * depth] * unpacked_rhs[depth + k * j];
+                    }
+                }
+            }
+
+            for pack_lhs in [false, true] {
+                for pack_rhs in [false, true] {
+                    let unpacked_lhs = &*unpacked_lhs;
+                    let unpacked_rhs = &*unpacked_rhs;
+
+                    let packed_lhs = &mut *avec![0.0; m.next_multiple_of(mr) * k];
+                    let packed_rhs = &mut *avec![0.0; n.next_multiple_of(nr) * k];
+
+                    unsafe {
+                        if pack_lhs {
+                            packing::pack_avx512_u64(
+                                packed_lhs.as_mut_ptr() as _,
+                                unpacked_lhs.as_ptr() as _,
+                                size_of::<f64>() as isize,
+                                (m * size_of::<f64>()) as isize,
+                                (mr * size_of::<f64>()) as isize,
+                                lhs_stride as isize,
+                                0,
+                                mr,
+                                outer_blocking.kc,
+                                m,
+                                k,
+                            );
+                        }
+                        if pack_rhs {
+                            packing::pack_avx512_u64(
+                                packed_rhs.as_mut_ptr() as _,
+                                unpacked_rhs.as_ptr() as _,
+                                (k * size_of::<f64>()) as isize,
+                                size_of::<f64>() as isize,
+                                (nr * size_of::<f64>()) as isize,
+                                rhs_stride as isize,
+                                0,
+                                nr,
+                                outer_blocking.kc,
+                                n,
+                                k,
+                            );
+                        }
+
+                        blocking(
+                            &Shape { m: mr, n: nr, k: 1 },
+                            &Shape {
+                                m: outer_blocking.mc,
+                                n: outer_blocking.nc,
+                                k: outer_blocking.kc,
+                            },
+                            &Shape { m, n, k },
+                            &top_l_plan,
+                            &top_l_plan,
+                            &bot_l_plan,
+                            &top_r_plan,
+                            &top_r_plan,
+                            &bot_r_plan,
+                            dst.as_mut_ptr() as _,
+                            if pack_lhs {
+                                packed_lhs.as_ptr()
+                            } else {
+                                unpacked_lhs.as_ptr()
+                            } as _,
+                            if pack_rhs {
+                                packed_rhs.as_ptr()
+                            } else {
+                                unpacked_rhs.as_ptr()
+                            } as _,
+                            core::ptr::from_ref(&1.0f64) as _,
+                            size_of::<f64>() as isize,
+                            (m * size_of::<f64>()) as isize,
+                            if pack_lhs {
+                                (mr * size_of::<f64>()) as isize
+                            } else {
+                                (m * size_of::<f64>()) as isize
+                            },
+                            if pack_lhs {
+                                lhs_stride as isize
+                            } else {
+                                (mr * size_of::<f64>()) as isize
+                            },
+                            if pack_lhs {
+                                (lhs_stride * m.div_ceil(mr)) as isize
+                            } else {
+                                (outer_blocking.kc * m * size_of::<f64>()) as isize
+                            },
+                            if pack_rhs {
+                                (nr * size_of::<f64>()) as isize
+                            } else {
+                                size_of::<f64>() as isize
+                            },
+                            if pack_rhs {
+                                size_of::<f64>() as isize
+                            } else {
+                                (k * size_of::<f64>()) as isize
+                            },
+                            if pack_rhs {
+                                rhs_stride as isize
+                            } else {
+                                (k * nr * size_of::<f64>()) as isize
+                            },
+                            if pack_rhs {
+                                (rhs_stride * n.div_ceil(nr)) as isize
+                            } else {
+                                (outer_blocking.kc * size_of::<f64>()) as isize
+                            },
+                        );
+                    }
+
+                    for i in 0..m * n {
+                        assert!((dst[i] - target[i]).abs() < 1e-10);
+                    }
+                }
+            }
+        }
+    }
+}

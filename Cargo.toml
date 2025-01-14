@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+rayon = "1.10.0"
 
 [target.'cfg(any(all(target_arch = "x86", not(target_env = "sgx"), target_feature = "sse"), all(target_arch = "x86_64", not(target_env = "sgx"))))'.dependencies]
 raw-cpuid = { version = "11.1.0", optional = true }
@@ -19,6 +20,7 @@ nightly = []
 [dev-dependencies]
 aligned-vec = "0.6.1"
 diol = { version = "0.8.3", default-features = false }
+gemm = { version = "0.18.2", default-features = false, features = ["std", "rayon", "nightly"] }
 num-complex = "0.4.6"
 rand = "0.8.5"
 

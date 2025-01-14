@@ -37,7 +37,8 @@ pub unsafe fn pack_avx512_u32_col_major(
         }
     } else {
         let head_mask = crate::millikernel::AVX512_HEAD_MASK_F32[rows_to_skip];
-        let tail_mask = crate::millikernel::AVX512_TAIL_MASK_F32[total_nrows % 16];
+        let tail_mask = crate::millikernel::AVX512_TAIL_MASK_F32
+            [total_nrows.next_multiple_of(16) - total_nrows];
 
         if total_nrows <= 16 {
             let mask = head_mask & tail_mask;
@@ -167,7 +168,8 @@ pub unsafe fn pack_avx_u32_col_major(
         }
     } else {
         let head_mask = crate::millikernel::AVX_HEAD_MASK_F32[rows_to_skip];
-        let tail_mask = crate::millikernel::AVX_TAIL_MASK_F32[total_nrows % 8];
+        let tail_mask =
+            crate::millikernel::AVX_TAIL_MASK_F32[total_nrows.next_multiple_of(8) - total_nrows];
 
         if total_nrows <= 8 {
             let mask = _mm256_and_si256(head_mask, tail_mask);
@@ -231,10 +233,9 @@ pub unsafe fn pack_avx_half_u32_col_major(
     ncols: usize,
     rows_to_skip: usize,
 ) {
-    let mut dst = dst as *mut __m128i;
-    let mut src = src as *const __m128i;
-
     if rows_to_skip == 0 && total_nrows == 12 {
+        let mut dst = dst as *mut __m128i;
+        let mut src = src as *const __m128i;
         for _ in 0..ncols {
             dst.write_unaligned(src.read_unaligned());
             dst.add(1).write_unaligned(src.add(1).read_unaligned());
@@ -243,6 +244,8 @@ pub unsafe fn pack_avx_half_u32_col_major(
             src = src.wrapping_byte_offset(src_byte_stride);
         }
     } else if rows_to_skip == 0 && total_nrows == 6 {
+        let mut dst = dst as *mut __m128i;
+        let mut src = src as *const __m128i;
         for _ in 0..ncols {
             dst.write_unaligned(src.read_unaligned());
             (dst.add(1) as *mut u64).write_unaligned((src.add(1) as *const u64).read_unaligned());
@@ -250,7 +253,16 @@ pub unsafe fn pack_avx_half_u32_col_major(
             src = src.wrapping_byte_offset(src_byte_stride);
         }
     } else {
-        panic!();
+        let mut dst = dst;
+        let mut src = src;
+        for _ in 0..ncols {
+            for i in rows_to_skip..total_nrows {
+                dst.wrapping_add(i)
+                    .write_unaligned(src.add(i).read_unaligned());
+            }
+            dst = dst.wrapping_byte_offset(dst_byte_stride);
+            src = src.wrapping_byte_offset(src_byte_stride);
+        }
     }
 }
 
@@ -2580,7 +2592,7 @@ mod tests {
 
     #[test]
     fn test_avx_32_col_major() {
-        for m in [6, 8, 16] {
+        for m in [1, 6, 8, 12, 16] {
             for n in 0..111 {
                 for skip in 0..1usize {
                     let mut src = vec![0u32; m * n + skip.next_multiple_of(16)];

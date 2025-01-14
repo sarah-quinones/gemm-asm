@@ -103,7 +103,6 @@ fn gemm_blocking(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
     let lhs_stride = (mr * outer_blocking.kc) * size_of::<f64>();
     let rhs_stride = (nr * outer_blocking.kc) * size_of::<f64>();
 
-    let do_pack = false;
     let pack_lhs = true;
     let pack_rhs = false;
 
@@ -136,42 +135,41 @@ fn gemm_blocking(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
     let unpacked_lhs = &*avec![1.0; m * k];
     let unpacked_rhs = &*avec![1.0; n * k];
 
-    let lhs = &mut *avec![1.0; m.next_multiple_of(mr) * k];
-    let rhs = &mut *avec![1.0; n.next_multiple_of(nr) * k];
+    let packed_lhs = &mut *avec![1.0; m.next_multiple_of(mr) * k];
+    let packed_rhs = &mut *avec![1.0; n.next_multiple_of(nr) * k];
 
     let f = move || unsafe {
-        if do_pack {
-            if pack_lhs {
-                packing::pack_avx512_u64(
-                    lhs.as_mut_ptr() as _,
-                    unpacked_lhs.as_ptr() as _,
-                    size_of::<f64>() as isize,
-                    (m * size_of::<f64>()) as isize,
-                    (mr * size_of::<f64>()) as isize,
-                    lhs_stride as isize,
-                    0,
-                    mr,
-                    outer_blocking.kc,
-                    m,
-                    k,
-                );
-            }
-            if pack_rhs {
-                packing::pack_avx512_u64(
-                    rhs.as_mut_ptr() as _,
-                    unpacked_rhs.as_ptr() as _,
-                    (k * size_of::<f64>()) as isize,
-                    size_of::<f64>() as isize,
-                    (nr * size_of::<f64>()) as isize,
-                    rhs_stride as isize,
-                    0,
-                    nr,
-                    outer_blocking.kc,
-                    n,
-                    k,
-                );
-            }
+        if pack_lhs {
+            packing::pack_avx512_u64(
+                packed_lhs.as_mut_ptr() as _,
+                unpacked_lhs.as_ptr() as _,
+                size_of::<f64>() as isize,
+                (m * size_of::<f64>()) as isize,
+                (mr * size_of::<f64>()) as isize,
+                lhs_stride as isize,
+                0,
+                mr,
+                outer_blocking.kc,
+                m,
+                k,
+            );
         }
+        if pack_rhs {
+            packing::pack_avx512_u64(
+                packed_rhs.as_mut_ptr() as _,
+                unpacked_rhs.as_ptr() as _,
+                (k * size_of::<f64>()) as isize,
+                size_of::<f64>() as isize,
+                (nr * size_of::<f64>()) as isize,
+                rhs_stride as isize,
+                0,
+                nr,
+                outer_blocking.kc,
+                n,
+                k,
+            );
+        }
+
         blocking::blocking(
             &Shape { m: mr, n: nr, k: 1 },
             &Shape {
@@ -187,8 +185,16 @@ fn gemm_blocking(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
             &top_r_plan,
             &bot_r_plan,
             dst.as_mut_ptr() as _,
-            lhs.as_ptr() as _,
-            rhs.as_ptr() as _,
+            if pack_lhs {
+                packed_lhs.as_ptr()
+            } else {
+                unpacked_lhs.as_ptr()
+            } as _,
+            if pack_rhs {
+                packed_rhs.as_ptr()
+            } else {
+                unpacked_rhs.as_ptr()
+            } as _,
             core::ptr::from_ref(&1.0f64) as _,
             size_of::<f64>() as isize,
             (m * size_of::<f64>()) as isize,
@@ -220,12 +226,12 @@ fn gemm_blocking(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
             if pack_rhs {
                 rhs_stride as isize
             } else {
-                (nr * size_of::<f64>()) as isize
+                (k * nr * size_of::<f64>()) as isize
             },
             if pack_rhs {
-                (rhs_stride * m.div_ceil(mr)) as isize
+                (rhs_stride * n.div_ceil(nr)) as isize
             } else {
-                (outer_blocking.kc * n * size_of::<f64>()) as isize
+                (outer_blocking.kc * size_of::<f64>()) as isize
             },
         );
     };
