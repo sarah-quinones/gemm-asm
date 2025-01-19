@@ -67,6 +67,7 @@ fn pack_col_major(bencher: Bencher, n: usize) {
             src.as_ptr(),
             (n * size_of::<f32>()) as isize,
             (m * size_of::<f32>()) as isize,
+            0,
             m,
             n,
             0,
@@ -95,48 +96,37 @@ fn pack_naive(bencher: Bencher, n: usize) {
     });
 }
 
-fn gemm_blocking(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
+fn big_gemm_asm(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
     let mr = 16;
     let nr = 12;
 
-    let outer_blocking = cache::kernel_params(m, n, k, mr, nr, size_of::<f64>());
+    let mut outer_blocking = cache::kernel_params(m, n, k, mr, nr, size_of::<f64>());
+    outer_blocking.mc = outer_blocking.mc.next_multiple_of(mr * 4);
+
     let lhs_stride = (mr * outer_blocking.kc) * size_of::<f64>();
     let rhs_stride = (nr * outer_blocking.kc) * size_of::<f64>();
 
     let pack_lhs = true;
     let pack_rhs = false;
 
-    let top_l_plan = millikernel::f64_plan_avx512(
+    let plan = blocking::blocking_plan(
+        millikernel::f64_plan_avx512,
         0,
+        m,
+        n,
+        millikernel::Accum::Replace,
         outer_blocking.mc,
         outer_blocking.nc,
-        millikernel::Accum::Replace,
-    );
-    let bot_l_plan = millikernel::f64_plan_avx512(
-        0,
-        m % outer_blocking.mc,
-        outer_blocking.nc,
-        millikernel::Accum::Replace,
-    );
-    let top_r_plan = millikernel::f64_plan_avx512(
-        0,
-        outer_blocking.mc,
-        n % outer_blocking.nc,
-        millikernel::Accum::Replace,
-    );
-    let bot_r_plan = millikernel::f64_plan_avx512(
-        0,
-        m % outer_blocking.mc,
-        n % outer_blocking.nc,
-        millikernel::Accum::Replace,
     );
 
     let dst = &mut *avec![0.0; m * n];
     let unpacked_lhs = &*avec![1.0; m * k];
     let unpacked_rhs = &*avec![1.0; n * k];
 
-    let packed_lhs = &mut *avec![1.0; m.next_multiple_of(mr) * k];
-    let packed_rhs = &mut *avec![1.0; n.next_multiple_of(nr) * k];
+    let packed_lhs =
+        &mut *avec![1.0; m.next_multiple_of(mr) * k.next_multiple_of(outer_blocking.kc)];
+    let packed_rhs =
+        &mut *avec![1.0; n.next_multiple_of(nr) * k.next_multiple_of(outer_blocking.kc)];
 
     let f = move || unsafe {
         if pack_lhs {
@@ -178,12 +168,7 @@ fn gemm_blocking(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
                 k: outer_blocking.kc,
             },
             &Shape { m, n, k },
-            &top_l_plan,
-            &top_l_plan,
-            &bot_l_plan,
-            &top_r_plan,
-            &top_r_plan,
-            &bot_r_plan,
+            &plan,
             dst.as_mut_ptr() as _,
             if pack_lhs {
                 packed_lhs.as_ptr()
@@ -235,6 +220,45 @@ fn gemm_blocking(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
             },
         );
     };
+    // let mut f = f;
+    // for _ in 0..10 {
+    //     f();
+    // }
+    bencher.bench(f);
+}
+
+fn big_gemm_old(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
+    let dst = &mut *avec![0.0; m * n];
+    let lhs = &*avec![1.0; m * k];
+    let rhs = &*avec![1.0; n * k];
+
+    let f = move || unsafe {
+        gemm::gemm(
+            m,
+            n,
+            k,
+            dst.as_mut_ptr() as _,
+            m as isize,
+            1,
+            false,
+            lhs.as_ptr(),
+            m as isize,
+            1,
+            rhs.as_ptr(),
+            k as isize,
+            1,
+            0.0,
+            1.0,
+            false,
+            false,
+            false,
+            gemm::Parallelism::None,
+        );
+    };
+    // let mut f = f;
+    // for _ in 0..10 {
+    //     f();
+    // }
     bencher.bench(f);
 }
 
@@ -244,12 +268,12 @@ fn main() -> std::io::Result<()> {
     bench.register_many(list![pack_naive, pack_col_major, pack_row_major], [32]);
     bench.register_many(list![gemm_asm], [(8, 4)]);
     bench.register_many(
-        list![gemm_blocking],
+        list![big_gemm_asm, big_gemm_old],
         [
+            (1024, 1024, 1024),
             (128, 128, 128),
             (256, 256, 256),
             (512, 512, 512),
-            (1024, 1024, 1024),
             (4096, 4096, 4096),
             (1024, 1024, 128),
             (4096, 4096, 128),

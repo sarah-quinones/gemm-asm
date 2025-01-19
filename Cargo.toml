@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 rayon = "1.10.0"
+pulp = { path = "../pulp/pulp" }
 
 [target.'cfg(any(all(target_arch = "x86", not(target_env = "sgx"), target_feature = "sse"), all(target_arch = "x86_64", not(target_env = "sgx"))))'.dependencies]
 raw-cpuid = { version = "11.1.0", optional = true }

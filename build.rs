@@ -1,5 +1,7 @@
 use std::{env, fmt::Write, fs, path::Path};
 
+const UNROLL4: bool = true;
+
 #[derive(Copy, Clone)]
 pub enum DType {
     F64,
@@ -464,9 +466,17 @@ pub mod x86_64 {
             let sign = if *offset >= 0 { "+" } else { "-" };
             let offset = offset.unsigned_abs();
             if let Some(index) = index {
-                write!(f, "[{addr} + {scale} * {index} {sign} {offset}]")
+                if offset == 0 {
+                    write!(f, "[{addr} + {scale} * {index}]")
+                } else {
+                    write!(f, "[{addr} + {scale} * {index} {sign} {offset}]")
+                }
             } else {
-                write!(f, "[{addr} {sign} {offset}]")
+                if offset == 0 {
+                    write!(f, "[{addr}]")
+                } else {
+                    write!(f, "[{addr} {sign} {offset}]")
+                }
             }
         }
     }
@@ -507,10 +517,31 @@ pub mod x86_64 {
         }
 
         fn loop_(&mut self, label: usize, counter: Reg, body: &mut dyn FnMut(&mut dyn KernelCtx)) {
-            self.writeln(&format!("test {counter}, {counter}"));
-            self.writeln(&format!("jz 3{label}1f"));
-            self.loop_nonempty(label, counter, body);
-            self.writeln(&format!("3{label}1:"));
+            if UNROLL4 {
+                self.writeln(&format!("push {counter}"));
+                self.writeln(&format!("shr {counter}, 2"));
+                self.writeln(&format!("jz 3{label}1f"));
+                {
+                    let mut body = |this: &mut dyn KernelCtx| {
+                        body(this);
+                        body(this);
+                        body(this);
+                        body(this);
+                    };
+                    self.loop_nonempty(label, counter, &mut body);
+                }
+                self.writeln(&format!("3{label}1:"));
+                self.writeln(&format!("pop {counter}"));
+                self.writeln(&format!("and {counter}, 3"));
+                self.writeln(&format!("jz 3{label}1f"));
+                self.loop_nonempty(label, counter, body);
+                self.writeln(&format!("3{label}1:"));
+            } else {
+                self.writeln(&format!("test {counter}, {counter}"));
+                self.writeln(&format!("jz 3{label}1f"));
+                self.loop_nonempty(label, counter, body);
+                self.writeln(&format!("3{label}1:"));
+            }
         }
 
         fn loop_nonempty(
@@ -611,8 +642,6 @@ pub mod x86_64 {
             }
         }
 
-        assert!(m <= 2);
-
         let tmp0 = Reg::R13;
         let tmp1 = Reg::R14;
 
@@ -706,6 +735,7 @@ pub mod x86_64 {
                         ctx.vload(lhs, mem);
                     }
                 }
+                ctx.add(LHS_PTR, LHS_CS);
 
                 for j in 0..n {
                     let addr = tmp[j / 3];
@@ -723,6 +753,10 @@ pub mod x86_64 {
                         offset: 0,
                     };
                     ctx.vbroadcast(rhs, mem);
+
+                    if !ctx.is_cplx() && (j + 1 == n || j % 3 == 2) {
+                        ctx.add(addr, VERTICAL_RHS_RS);
+                    }
 
                     for i in 0..m {
                         let lhs = i + m * n;
@@ -756,6 +790,9 @@ pub mod x86_64 {
                             offset: ctx.unit_size(),
                         };
                         ctx.vbroadcast(rhs, mem);
+                        if j + 1 == n || j % 3 == 2 {
+                            ctx.add(addr, VERTICAL_RHS_RS);
+                        }
 
                         for i in 0..m {
                             let lhs = i + m * n;
@@ -766,11 +803,6 @@ pub mod x86_64 {
                             }
                         }
                     }
-                }
-
-                ctx.add(LHS_PTR, LHS_CS);
-                for tmp in tmp {
-                    ctx.add(*tmp, VERTICAL_RHS_RS);
                 }
             };
 

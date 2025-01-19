@@ -1,23 +1,27 @@
 use core::arch::x86_64::*;
 use core::mem::{transmute, zeroed};
 
+const UNROLL: usize = 4;
+
 #[cfg(feature = "nightly")]
 #[target_feature(enable = "avx512f")]
-pub unsafe fn pack_avx512_u32_col_major(
+unsafe fn pack_avx512_u32_col_major_impl<const N: usize>(
     dst: *mut u32,
     src: *const u32,
     src_byte_stride: isize,
     dst_byte_stride: isize,
+    dst_block_stride: isize,
     total_nrows: usize,
     ncols: usize,
     rows_to_skip: usize,
 ) {
     if dst_byte_stride % 64 != 0 && rows_to_skip < 8 {
-        return pack_avx_u32_col_major(
+        return pack_avx_u32_col_major_impl::<N>(
             dst,
             src,
             src_byte_stride,
             dst_byte_stride,
+            dst_block_stride,
             total_nrows,
             ncols,
             rows_to_skip,
@@ -29,13 +33,19 @@ pub unsafe fn pack_avx512_u32_col_major(
     let mut src = src as *const __m512i;
 
     if rows_to_skip == 0 && total_nrows == 32 {
+        let dst_block_stride = dst_block_stride as usize;
         for _ in 0..ncols {
-            dst.write_unaligned(src.read_unaligned());
-            dst.add(1).write_unaligned(src.add(1).read_unaligned());
+            for idx in 0..N {
+                dst.byte_add(dst_block_stride * idx)
+                    .write_unaligned(src.add(idx * 2).read_unaligned());
+                dst.byte_add(dst_block_stride * idx)
+                    .add(1)
+                    .write_unaligned(src.add(idx * 2).add(1).read_unaligned());
+            }
             dst = dst.wrapping_byte_offset(dst_byte_stride);
             src = src.wrapping_byte_offset(src_byte_stride);
         }
-    } else {
+    } else if const { N == 1 } {
         let head_mask = crate::millikernel::AVX512_HEAD_MASK_F32[rows_to_skip];
         let tail_mask = crate::millikernel::AVX512_TAIL_MASK_F32
             [total_nrows.next_multiple_of(16) - total_nrows];
@@ -44,9 +54,8 @@ pub unsafe fn pack_avx512_u32_col_major(
             let mask = head_mask & tail_mask;
 
             for _ in 0..ncols {
-                _mm512_mask_storeu_epi32(
+                _mm512_storeu_epi32(
                     dst as *mut i32,
-                    mask,
                     _mm512_maskz_loadu_epi32(mask, src as *const i32),
                 );
 
@@ -55,14 +64,12 @@ pub unsafe fn pack_avx512_u32_col_major(
             }
         } else if total_nrows <= 32 {
             for _ in 0..ncols {
-                _mm512_mask_storeu_epi32(
+                _mm512_storeu_epi32(
                     dst as *mut i32,
-                    head_mask,
                     _mm512_maskz_loadu_epi32(head_mask, src as *const i32),
                 );
-                _mm512_mask_storeu_epi32(
+                _mm512_storeu_epi32(
                     dst.add(1) as *mut i32,
-                    tail_mask,
                     _mm512_maskz_loadu_epi32(tail_mask, src.add(1) as *const i32),
                 );
 
@@ -73,15 +80,13 @@ pub unsafe fn pack_avx512_u32_col_major(
             debug_assert!(total_nrows <= 48);
 
             for _ in 0..ncols {
-                _mm512_mask_storeu_epi32(
+                _mm512_storeu_epi32(
                     dst as *mut i32,
-                    head_mask,
                     _mm512_maskz_loadu_epi32(head_mask, src as *const i32),
                 );
                 dst.add(1).write_unaligned(src.add(1).read_unaligned());
-                _mm512_mask_storeu_epi32(
+                _mm512_storeu_epi32(
                     dst.add(2) as *mut i32,
-                    tail_mask,
                     _mm512_maskz_loadu_epi32(tail_mask, src.add(2) as *const i32),
                 );
 
@@ -89,6 +94,45 @@ pub unsafe fn pack_avx512_u32_col_major(
                 src = src.wrapping_byte_offset(src_byte_stride);
             }
         }
+    } else {
+        panic!();
+    }
+}
+
+#[cfg(feature = "nightly")]
+#[target_feature(enable = "avx512f")]
+pub unsafe fn pack_avx512_u32_col_major(
+    dst: *mut u32,
+    src: *const u32,
+    src_byte_stride: isize,
+    dst_byte_stride: isize,
+    dst_block_stride: isize,
+    total_nrows: usize,
+    ncols: usize,
+    rows_to_skip: usize,
+) {
+    if dst_block_stride == 0 {
+        pack_avx512_u32_col_major_impl::<1>(
+            dst,
+            src,
+            src_byte_stride,
+            dst_byte_stride,
+            dst_block_stride,
+            total_nrows,
+            ncols,
+            rows_to_skip,
+        )
+    } else {
+        pack_avx512_u32_col_major_impl::<UNROLL>(
+            dst,
+            src,
+            src_byte_stride,
+            dst_byte_stride,
+            dst_block_stride,
+            total_nrows,
+            ncols,
+            rows_to_skip,
+        )
     }
 }
 
@@ -98,6 +142,7 @@ pub unsafe fn pack_avx512_u64_col_major(
     src: *const u64,
     src_byte_stride: isize,
     dst_byte_stride: isize,
+    dst_block_stride: isize,
     total_nrows: usize,
     ncols: usize,
     rows_to_skip: usize,
@@ -107,6 +152,7 @@ pub unsafe fn pack_avx512_u64_col_major(
         src as *const u32,
         src_byte_stride,
         dst_byte_stride,
+        dst_block_stride,
         2 * total_nrows,
         ncols,
         2 * rows_to_skip,
@@ -119,6 +165,7 @@ pub unsafe fn pack_avx512_u128_col_major(
     src: *const u128,
     src_byte_stride: isize,
     dst_byte_stride: isize,
+    dst_block_stride: isize,
     total_nrows: usize,
     ncols: usize,
     rows_to_skip: usize,
@@ -128,6 +175,7 @@ pub unsafe fn pack_avx512_u128_col_major(
         src as *const u32,
         src_byte_stride,
         dst_byte_stride,
+        dst_block_stride,
         4 * total_nrows,
         ncols,
         4 * rows_to_skip,
@@ -135,38 +183,45 @@ pub unsafe fn pack_avx512_u128_col_major(
 }
 
 #[target_feature(enable = "avx2")]
-pub unsafe fn pack_avx_u32_col_major(
+unsafe fn pack_avx_u32_col_major_impl<const N: usize>(
     dst: *mut u32,
     src: *const u32,
     src_byte_stride: isize,
     dst_byte_stride: isize,
+    dst_block_stride: isize,
     total_nrows: usize,
     ncols: usize,
     rows_to_skip: usize,
 ) {
     if dst_byte_stride % 32 != 0 && rows_to_skip < 4 {
-        return pack_avx_half_u32_col_major(
+        return pack_avx_half_u32_col_major_impl::<N>(
             dst,
             src,
             src_byte_stride,
             dst_byte_stride,
+            dst_block_stride,
             total_nrows,
             ncols,
             rows_to_skip,
         );
     }
 
-    debug_assert!(rows_to_skip < 8);
     let mut dst = dst as *mut __m256i;
     let mut src = src as *const __m256i;
     if rows_to_skip == 0 && total_nrows == 16 {
+        let dst_block_stride = dst_block_stride as usize;
         for _ in 0..ncols {
-            dst.write_unaligned(src.read_unaligned());
-            dst.add(1).write_unaligned(src.add(1).read_unaligned());
+            for idx in 0..N {
+                dst.byte_add(dst_block_stride * idx)
+                    .write_unaligned(src.add(idx * 2).read_unaligned());
+                dst.byte_add(dst_block_stride * idx)
+                    .add(1)
+                    .write_unaligned(src.add(idx * 2).add(1).read_unaligned());
+            }
             dst = dst.wrapping_byte_offset(dst_byte_stride);
             src = src.wrapping_byte_offset(src_byte_stride);
         }
-    } else {
+    } else if const { N == 1 } {
         let head_mask = crate::millikernel::AVX_HEAD_MASK_F32[rows_to_skip];
         let tail_mask =
             crate::millikernel::AVX_TAIL_MASK_F32[total_nrows.next_multiple_of(8) - total_nrows];
@@ -175,9 +230,8 @@ pub unsafe fn pack_avx_u32_col_major(
             let mask = _mm256_and_si256(head_mask, tail_mask);
 
             for _ in 0..ncols {
-                _mm256_maskstore_epi32(
+                _mm256_storeu_epi32(
                     dst as *mut i32,
-                    mask,
                     _mm256_maskload_epi32(src as *const i32, mask),
                 );
 
@@ -186,14 +240,12 @@ pub unsafe fn pack_avx_u32_col_major(
             }
         } else if total_nrows <= 16 {
             for _ in 0..ncols {
-                _mm256_maskstore_epi32(
+                _mm256_storeu_epi32(
                     dst as *mut i32,
-                    head_mask,
                     _mm256_maskload_epi32(src as *const i32, head_mask),
                 );
-                _mm256_maskstore_epi32(
+                _mm256_storeu_epi32(
                     dst.add(1) as *mut i32,
-                    tail_mask,
                     _mm256_maskload_epi32(src.add(1) as *const i32, tail_mask),
                 );
 
@@ -204,15 +256,13 @@ pub unsafe fn pack_avx_u32_col_major(
             debug_assert!(total_nrows <= 24);
 
             for _ in 0..ncols {
-                _mm256_maskstore_epi32(
+                _mm256_storeu_epi32(
                     dst as *mut i32,
-                    head_mask,
                     _mm256_maskload_epi32(src as *const i32, head_mask),
                 );
                 dst.add(1).write_unaligned(src.add(1).read_unaligned());
-                _mm256_maskstore_epi32(
+                _mm256_storeu_epi32(
                     dst.add(2) as *mut i32,
-                    tail_mask,
                     _mm256_maskload_epi32(src.add(2) as *const i32, tail_mask),
                 );
 
@@ -220,6 +270,103 @@ pub unsafe fn pack_avx_u32_col_major(
                 src = src.wrapping_byte_offset(src_byte_stride);
             }
         }
+    } else {
+        panic!();
+    }
+}
+
+#[target_feature(enable = "avx2")]
+pub unsafe fn pack_avx_u32_col_major(
+    dst: *mut u32,
+    src: *const u32,
+    src_byte_stride: isize,
+    dst_byte_stride: isize,
+    dst_block_stride: isize,
+    total_nrows: usize,
+    ncols: usize,
+    rows_to_skip: usize,
+) {
+    if dst_block_stride == 0 {
+        pack_avx_u32_col_major_impl::<1>(
+            dst,
+            src,
+            src_byte_stride,
+            dst_byte_stride,
+            dst_block_stride,
+            total_nrows,
+            ncols,
+            rows_to_skip,
+        )
+    } else {
+        pack_avx_u32_col_major_impl::<UNROLL>(
+            dst,
+            src,
+            src_byte_stride,
+            dst_byte_stride,
+            dst_block_stride,
+            total_nrows,
+            ncols,
+            rows_to_skip,
+        )
+    }
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn pack_avx_half_u32_col_major_impl<const N: usize>(
+    dst: *mut u32,
+    src: *const u32,
+    src_byte_stride: isize,
+    dst_byte_stride: isize,
+    dst_block_stride: isize,
+    total_nrows: usize,
+    ncols: usize,
+    rows_to_skip: usize,
+) {
+    if rows_to_skip == 0 && total_nrows == 12 {
+        let dst_block_stride = dst_block_stride as usize;
+        let mut dst = dst as *mut __m128i;
+        let mut src = src as *const __m128i;
+        for _ in 0..ncols {
+            for idx in 0..N {
+                dst.byte_add(dst_block_stride * idx)
+                    .write_unaligned(src.add(idx * 3).read_unaligned());
+                dst.byte_add(dst_block_stride * idx)
+                    .add(1)
+                    .write_unaligned(src.add(idx * 3).add(1).read_unaligned());
+                dst.byte_add(dst_block_stride * idx)
+                    .add(2)
+                    .write_unaligned(src.add(idx * 3).add(2).read_unaligned());
+            }
+            dst = dst.wrapping_byte_offset(dst_byte_stride);
+            src = src.wrapping_byte_offset(src_byte_stride);
+        }
+    } else if const { N == 1 } {
+        if rows_to_skip == 0 && total_nrows == 6 {
+            let mut dst = dst as *mut __m128i;
+            let mut src = src as *const __m128i;
+            for _ in 0..ncols {
+                dst.write_unaligned(src.read_unaligned());
+                (dst.add(1) as *mut u64)
+                    .write_unaligned((src.add(1) as *const u64).read_unaligned());
+
+                dst = dst.wrapping_byte_offset(dst_byte_stride);
+                src = src.wrapping_byte_offset(src_byte_stride);
+            }
+        } else {
+            let mut dst = dst;
+            let mut src = src;
+            for _ in 0..ncols {
+                for i in rows_to_skip..total_nrows {
+                    dst.wrapping_add(i)
+                        .write_unaligned(src.add(i).read_unaligned());
+                }
+
+                dst = dst.wrapping_byte_offset(dst_byte_stride);
+                src = src.wrapping_byte_offset(src_byte_stride);
+            }
+        }
+    } else {
+        panic!();
     }
 }
 
@@ -229,40 +376,33 @@ pub unsafe fn pack_avx_half_u32_col_major(
     src: *const u32,
     src_byte_stride: isize,
     dst_byte_stride: isize,
+    dst_block_stride: isize,
     total_nrows: usize,
     ncols: usize,
     rows_to_skip: usize,
 ) {
-    if rows_to_skip == 0 && total_nrows == 12 {
-        let mut dst = dst as *mut __m128i;
-        let mut src = src as *const __m128i;
-        for _ in 0..ncols {
-            dst.write_unaligned(src.read_unaligned());
-            dst.add(1).write_unaligned(src.add(1).read_unaligned());
-            dst.add(2).write_unaligned(src.add(2).read_unaligned());
-            dst = dst.wrapping_byte_offset(dst_byte_stride);
-            src = src.wrapping_byte_offset(src_byte_stride);
-        }
-    } else if rows_to_skip == 0 && total_nrows == 6 {
-        let mut dst = dst as *mut __m128i;
-        let mut src = src as *const __m128i;
-        for _ in 0..ncols {
-            dst.write_unaligned(src.read_unaligned());
-            (dst.add(1) as *mut u64).write_unaligned((src.add(1) as *const u64).read_unaligned());
-            dst = dst.wrapping_byte_offset(dst_byte_stride);
-            src = src.wrapping_byte_offset(src_byte_stride);
-        }
+    if dst_block_stride == 0 {
+        pack_avx_half_u32_col_major_impl::<1>(
+            dst,
+            src,
+            src_byte_stride,
+            dst_byte_stride,
+            dst_block_stride,
+            total_nrows,
+            ncols,
+            rows_to_skip,
+        )
     } else {
-        let mut dst = dst;
-        let mut src = src;
-        for _ in 0..ncols {
-            for i in rows_to_skip..total_nrows {
-                dst.wrapping_add(i)
-                    .write_unaligned(src.add(i).read_unaligned());
-            }
-            dst = dst.wrapping_byte_offset(dst_byte_stride);
-            src = src.wrapping_byte_offset(src_byte_stride);
-        }
+        pack_avx_half_u32_col_major_impl::<UNROLL>(
+            dst,
+            src,
+            src_byte_stride,
+            dst_byte_stride,
+            dst_block_stride,
+            total_nrows,
+            ncols,
+            rows_to_skip,
+        )
     }
 }
 
@@ -271,6 +411,7 @@ pub unsafe fn pack_avx_u64_col_major(
     src: *const u64,
     src_byte_stride: isize,
     dst_byte_stride: isize,
+    dst_block_stride: isize,
     total_nrows: usize,
     ncols: usize,
     rows_to_skip: usize,
@@ -280,6 +421,7 @@ pub unsafe fn pack_avx_u64_col_major(
         src as *const u32,
         src_byte_stride,
         dst_byte_stride,
+        dst_block_stride,
         2 * total_nrows,
         ncols,
         2 * rows_to_skip,
@@ -291,6 +433,7 @@ pub unsafe fn pack_avx_u128_col_major(
     src: *const u128,
     src_byte_stride: isize,
     dst_byte_stride: isize,
+    dst_block_stride: isize,
     total_nrows: usize,
     ncols: usize,
     rows_to_skip: usize,
@@ -300,6 +443,7 @@ pub unsafe fn pack_avx_u128_col_major(
         src as *const u32,
         src_byte_stride,
         dst_byte_stride,
+        dst_block_stride,
         4 * total_nrows,
         ncols,
         4 * rows_to_skip,
@@ -2078,6 +2222,7 @@ pub unsafe fn pack_avx_u128_row_major(
 
 #[inline(never)]
 unsafe fn pack_impl(
+    sizeof: usize,
     dst: *mut (),
     src: *const (),
     src_rs: isize,
@@ -2101,6 +2246,7 @@ unsafe fn pack_impl(
         src_rs: isize,
         src_cs: isize,
         dst_stride: isize,
+        dst_block_stride: isize,
     ),
 ) {
     let mut col = 0;
@@ -2115,22 +2261,45 @@ unsafe fn pack_impl(
         {
             let mut src = src;
             while row < full_nrows {
-                let row_bs = Ord::min(full_nrows - row, block_nrows);
+                let mut row_bs = Ord::min(full_nrows - row, UNROLL * block_nrows);
+                let mr = Ord::min(full_nrows - row, block_nrows);
 
-                pack(
-                    dst,
-                    src,
-                    col_bs,
-                    row_bs,
-                    rows_to_skip,
-                    src_rs,
-                    src_cs,
-                    dst_stride,
-                );
+                let unroll = src_rs == sizeof as isize && row_bs == UNROLL * block_nrows;
+
+                if unroll {
+                    pack(
+                        dst,
+                        src,
+                        col_bs,
+                        mr,
+                        rows_to_skip,
+                        src_rs,
+                        src_cs,
+                        dst_stride,
+                        dst_block_stride,
+                    );
+                } else {
+                    row_bs = mr;
+                    pack(
+                        dst,
+                        src,
+                        col_bs,
+                        mr,
+                        rows_to_skip,
+                        src_rs,
+                        src_cs,
+                        dst_stride,
+                        0,
+                    );
+                }
 
                 rows_to_skip = rows_to_skip.saturating_sub(row_bs);
                 src = src.wrapping_byte_offset(src_rs * row_bs as isize);
-                dst = dst.wrapping_byte_offset(dst_block_stride);
+                dst = dst.wrapping_byte_offset(if unroll {
+                    UNROLL as isize * dst_block_stride
+                } else {
+                    dst_block_stride
+                });
                 row += row_bs;
             }
         }
@@ -2149,7 +2318,9 @@ unsafe fn pack_generic<T>(
     src_rs: isize,
     src_cs: isize,
     dst_stride: isize,
+    dst_block_stride: isize,
 ) {
+    let _ = dst_block_stride;
     let mut dst = dst as *mut T;
     let mut src = src as *const T;
     for _ in 0..ncols {
@@ -2194,12 +2365,14 @@ macro_rules! pack_fn {
                  rows_to_skip: usize,
                  _: isize,
                  src_cs: isize,
-                 dst_stride: isize| {
+                 dst_stride: isize,
+                 dst_block_stride: isize| {
                     $colmajor(
                         dst as *mut $ty,
                         src as *const $ty,
                         src_cs,
                         dst_stride,
+                        dst_block_stride,
                         nrows,
                         ncols,
                         rows_to_skip,
@@ -2213,7 +2386,8 @@ macro_rules! pack_fn {
                  rows_to_skip: usize,
                  src_rs: isize,
                  _: isize,
-                 dst_stride: isize| {
+                 dst_stride: isize,
+                 _: isize| {
                     $rowmajor(
                         dst as *mut $ty,
                         src as *const $ty,
@@ -2228,6 +2402,7 @@ macro_rules! pack_fn {
                 pack_generic::<$ty>
             };
             pack_impl(
+                size_of::<$ty>(),
                 dst,
                 src,
                 src_rs,
@@ -2536,6 +2711,7 @@ mod tests {
                             src.as_ptr(),
                             (m * size_of::<u128>()) as isize,
                             (m * size_of::<u128>()) as isize,
+                            0,
                             m,
                             n,
                             0,
@@ -2574,6 +2750,7 @@ mod tests {
                             src.as_ptr(),
                             (m * size_of::<u128>()) as isize,
                             (m * size_of::<u128>()) as isize,
+                            0,
                             m,
                             n,
                             0,
@@ -2611,6 +2788,7 @@ mod tests {
                             src.as_ptr(),
                             (m * size_of::<u32>()) as isize,
                             (m * size_of::<u32>()) as isize,
+                            0,
                             m,
                             n,
                             0,

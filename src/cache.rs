@@ -548,7 +548,7 @@ pub fn kernel_params(
         let m_iter = m.div_ceil(auto_mc);
         m.div_ceil(m_iter * mr) * mr
     };
-    let auto_mc = Ord::min(auto_mc, 8 * mr);
+    let auto_mc = Ord::min(auto_mc, 16 * mr);
 
     // l3 cache must hold
     //  - A macropanel: mc×kc: assume 1 assoc degree

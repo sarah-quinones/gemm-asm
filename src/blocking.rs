@@ -1,4 +1,4 @@
-use crate::millikernel::{millikernel, Plan};
+use crate::millikernel::{millikernel, Accum, Plan};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Shape {
@@ -7,18 +7,58 @@ pub struct Shape {
     pub k: usize,
 }
 
+pub struct BlockingPlan {
+    pub top_l: Plan,
+    pub mid_l: Plan,
+    pub bot_l: Plan,
+    pub top_r: Plan,
+    pub mid_r: Plan,
+    pub bot_r: Plan,
+}
+
+pub fn blocking_plan(
+    base_plan: fn(extra_masked_top_rows: usize, nrows: usize, ncols: usize, dst: Accum) -> Plan,
+    extra_masked_top_rows: usize,
+    nrows: usize,
+    ncols: usize,
+    dst: Accum,
+
+    mc: usize,
+    nc: usize,
+) -> BlockingPlan {
+    let extra = extra_masked_top_rows;
+    let nrows = nrows + extra;
+
+    if nrows <= mc {
+        let top_l = base_plan(extra, nrows - extra, nc, dst);
+        let top_r = base_plan(extra, nrows - extra, ncols % nc, dst);
+
+        BlockingPlan {
+            top_l,
+            mid_l: top_l,
+            bot_l: top_l,
+            top_r,
+            mid_r: top_r,
+            bot_r: top_r,
+        }
+    } else {
+        BlockingPlan {
+            top_l: base_plan(extra, mc - extra, nc, dst),
+            mid_l: base_plan(0, mc, nc, dst),
+            bot_l: base_plan(0, nrows % mc, nc, dst),
+
+            top_r: base_plan(extra, mc - extra, ncols % nc, dst),
+            mid_r: base_plan(0, mc, ncols % nc, dst),
+            bot_r: base_plan(0, nrows % mc, ncols % nc, dst),
+        }
+    }
+}
+
 pub unsafe fn blocking(
     inner_blocking: &Shape,
     outer_blocking: &Shape,
     dim: &Shape,
-
-    top_l_plan: &Plan,
-    mid_l_plan: &Plan,
-    bot_l_plan: &Plan,
-
-    top_r_plan: &Plan,
-    mid_r_plan: &Plan,
-    bot_r_plan: &Plan,
+    plan: &BlockingPlan,
 
     dst: *mut (),
     lhs: *const (),
@@ -42,26 +82,37 @@ pub unsafe fn blocking(
 
     let rhs_stride = rhs_inner_cs * (outer_blocking.n / inner_blocking.n) as isize;
 
-    let top_l_plan = &mut { *top_l_plan };
-    let mid_l_plan = &mut { *mid_l_plan };
-    let bot_l_plan = &mut { *bot_l_plan };
+    let BlockingPlan {
+        top_l,
+        mid_l,
+        bot_l,
+        top_r,
+        mid_r,
+        bot_r,
+    } = plan;
 
-    let top_r_plan = &mut { *top_r_plan };
-    let mid_r_plan = &mut { *mid_r_plan };
-    let bot_r_plan = &mut { *bot_r_plan };
+    let top_l = &mut { *top_l };
+    let mid_l = &mut { *mid_l };
+    let bot_l = &mut { *bot_l };
+
+    let top_r = &mut { *top_r };
+    let mid_r = &mut { *mid_r };
+    let bot_r = &mut { *bot_r };
+    let mut outer_blocking = *outer_blocking;
 
     let mut depth = 0;
     while depth < dim.k {
         let kc = Ord::min(outer_blocking.k, dim.k - depth);
+        outer_blocking.k = kc;
 
         blocking_rhs(
             rhs,
             dim,
-            outer_blocking,
+            &outer_blocking,
             inner_blocking,
-            top_l_plan,
-            mid_l_plan,
-            bot_l_plan,
+            top_l,
+            mid_l,
+            bot_l,
             dst,
             lhs,
             alpha,
@@ -73,17 +124,17 @@ pub unsafe fn blocking(
             dst_rs,
             dst_cs,
             rhs_stride,
-            top_r_plan,
-            mid_r_plan,
-            bot_r_plan,
+            top_r,
+            mid_r,
+            bot_r,
         );
 
-        top_l_plan.flags |= 1;
-        mid_l_plan.flags |= 1;
-        bot_l_plan.flags |= 1;
-        top_r_plan.flags |= 1;
-        mid_r_plan.flags |= 1;
-        bot_r_plan.flags |= 1;
+        top_l.flags |= 1;
+        mid_l.flags |= 1;
+        bot_l.flags |= 1;
+        top_r.flags |= 1;
+        mid_r.flags |= 1;
+        bot_r.flags |= 1;
 
         rhs = rhs.wrapping_byte_offset(rhs_outer_rs);
         lhs = lhs.wrapping_byte_offset(lhs_outer_cs);
@@ -96,9 +147,9 @@ unsafe fn blocking_rhs(
     dim: &Shape,
     outer_blocking: &Shape,
     inner_blocking: &Shape,
-    top_l_plan: &Plan,
-    mid_l_plan: &Plan,
-    bot_l_plan: &Plan,
+    top_l: &Plan,
+    mid_l: &Plan,
+    bot_l: &Plan,
     dst: *mut (),
     lhs: *const (),
     alpha: *const (),
@@ -110,9 +161,9 @@ unsafe fn blocking_rhs(
     dst_rs: isize,
     dst_cs: isize,
     rhs_stride: isize,
-    top_r_plan: &Plan,
-    mid_r_plan: &Plan,
-    bot_r_plan: &Plan,
+    top_r: &Plan,
+    mid_r: &Plan,
+    bot_r: &Plan,
 ) {
     let mut rhs = rhs;
     let mut dst = dst;
@@ -127,9 +178,9 @@ unsafe fn blocking_rhs(
             inner_blocking,
             outer_blocking,
             dim,
-            top_l_plan,
-            mid_l_plan,
-            bot_l_plan,
+            top_l,
+            mid_l,
+            bot_l,
             dst,
             lhs,
             rhs,
@@ -151,9 +202,9 @@ unsafe fn blocking_rhs(
             inner_blocking,
             outer_blocking,
             dim,
-            top_r_plan,
-            mid_r_plan,
-            bot_r_plan,
+            top_r,
+            mid_r,
+            bot_r,
             dst,
             lhs,
             rhs,
@@ -287,7 +338,14 @@ mod tests {
         let rng = &mut StdRng::seed_from_u64(0);
 
         for (m, n, k) in [
+            (256, 3, 1),
+            (256, 3, 17),
+            (256, 3, 19),
             (16, 12, 1),
+            (5, 3, 4),
+            (1024, 3, 4),
+            (5, 3, 33),
+            (5, 1024, 4),
             (16, 12, 16),
             (16, 24, 16),
             (1024, 1024, 32),
@@ -312,33 +370,19 @@ mod tests {
 
             let mut outer_blocking = cache::kernel_params(m, n, k, mr, nr, size_of::<f64>());
             outer_blocking.kc = Ord::min(16, k);
+            let kc = outer_blocking.kc;
 
             let lhs_stride = (mr * outer_blocking.kc) * size_of::<f64>();
             let rhs_stride = (nr * outer_blocking.kc) * size_of::<f64>();
 
-            let top_l_plan = millikernel::f64_plan_avx512(
+            let plan = blocking_plan(
+                millikernel::f64_plan_avx512,
                 0,
+                m,
+                n,
+                Accum::Replace,
                 outer_blocking.mc,
                 outer_blocking.nc,
-                Accum::Replace,
-            );
-            let bot_l_plan = millikernel::f64_plan_avx512(
-                0,
-                m % outer_blocking.mc,
-                outer_blocking.nc,
-                Accum::Replace,
-            );
-            let top_r_plan = millikernel::f64_plan_avx512(
-                0,
-                outer_blocking.mc,
-                n % outer_blocking.nc,
-                Accum::Replace,
-            );
-            let bot_r_plan = millikernel::f64_plan_avx512(
-                0,
-                m % outer_blocking.mc,
-                n % outer_blocking.nc,
-                Accum::Replace,
             );
 
             let dst = &mut *avec![0.0f64; m * n];
@@ -362,8 +406,10 @@ mod tests {
                     let unpacked_lhs = &*unpacked_lhs;
                     let unpacked_rhs = &*unpacked_rhs;
 
-                    let packed_lhs = &mut *avec![0.0; m.next_multiple_of(mr) * k];
-                    let packed_rhs = &mut *avec![0.0; n.next_multiple_of(nr) * k];
+                    let packed_lhs =
+                        &mut *avec![0.0; m.next_multiple_of(mr) * k.next_multiple_of(kc)];
+                    let packed_rhs =
+                        &mut *avec![0.0; n.next_multiple_of(nr) * k.next_multiple_of(kc)];
 
                     unsafe {
                         if pack_lhs {
@@ -405,12 +451,7 @@ mod tests {
                                 k: outer_blocking.kc,
                             },
                             &Shape { m, n, k },
-                            &top_l_plan,
-                            &top_l_plan,
-                            &bot_l_plan,
-                            &top_r_plan,
-                            &top_r_plan,
-                            &bot_r_plan,
+                            &plan,
                             dst.as_mut_ptr() as _,
                             if pack_lhs {
                                 packed_lhs.as_ptr()

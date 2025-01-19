@@ -314,6 +314,7 @@ dependencies = [
  "diol",
  "gemm",
  "num-complex",
+ "pulp 0.21.4",
  "rand",
  "raw-cpuid",
  "rayon",
@@ -364,7 +365,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "paste",
- "pulp",
+ "pulp 0.21.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "raw-cpuid",
  "rayon",
  "seq-macro",
@@ -594,6 +595,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e719e8df665df0d1c8fbfd238015744736151d4445ec0836b8e628aae103b77"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pulp"
+version = "0.21.4"
+dependencies = [
+ "bytemuck",
+ "cfg-if",
+ "libm",
+ "num-complex",
+ "reborrow",
+ "version_check",
 ]
 
 [[package]]
