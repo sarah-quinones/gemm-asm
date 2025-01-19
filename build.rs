@@ -54,20 +54,23 @@ pub mod x86_64 {
     use super::*;
 
     pub const VERTICAL_RHS_RS: Reg = Reg::Rcx;
-    pub const HORIZONTAL_DST_RS: Reg = Reg::Rcx;
 
     pub const DEPTH: Reg = Reg::Rax;
     pub const LHS_CS: Reg = Reg::Rdi;
     pub const RHS_CS: Reg = Reg::Rdx;
-    pub const DST_CS: Reg = Reg::Rsi;
     pub const TOP_MASK_PTR: Reg = Reg::Rbx;
     pub const BOT_MASK_PTR: Reg = Reg::Rbp;
     pub const ALPHA_PTR: Reg = Reg::R8;
 
     pub const LHS_PTR: Reg = Reg::R9;
     pub const RHS_PTR: Reg = Reg::R10;
+
     pub const DST_PTR: Reg = Reg::R11;
+
     pub const FLAGS: Reg = Reg::R12;
+
+    pub const IDX_I: Reg = Reg::Rsi;
+    pub const IDX_J: Reg = Reg::R15;
 
     pub struct RealAvx(pub String, pub DType, pub Domain);
     pub struct RealAvx512(pub String, pub DType, pub Domain);
@@ -642,13 +645,13 @@ pub mod x86_64 {
             }
         }
 
-        let tmp0 = Reg::R13;
-        let tmp1 = Reg::R14;
+        ctx.push(DEPTH);
+        ctx.push(LHS_PTR);
+        ctx.push(RHS_PTR);
+        ctx.push(IDX_I);
+        ctx.push(IDX_J);
 
-        ctx.push(tmp0);
-        ctx.push(tmp1);
-
-        let tmp = [RHS_PTR, tmp0, tmp1, DST_PTR];
+        let tmp = [RHS_PTR, IDX_I, IDX_J, DST_PTR];
         let tmp = &tmp[..1 + (n - 1) / 3];
 
         ctx.vzero(0);
@@ -694,9 +697,6 @@ pub mod x86_64 {
         let nbits = ctx.unit_size() * 8;
         let vreg = ctx.vreg();
 
-        ctx.push(DEPTH);
-        ctx.push(LHS_PTR);
-        ctx.push(RHS_PTR);
         {
             if n >= 9 {
                 ctx.push(DST_PTR);
@@ -853,9 +853,8 @@ pub mod x86_64 {
             }
         }
 
-        let tmp = [DST_PTR, tmp0, tmp1, RHS_PTR];
-        let tmp = &tmp[..1 + (n - 1) / 3];
-        setup_cs(ctx, tmp, DST_CS);
+        ctx.pop(IDX_J);
+        ctx.pop(IDX_I);
 
         let alpha = m * n;
         let alpha_imag = m * n + 1;
@@ -908,69 +907,93 @@ pub mod x86_64 {
             );
         }
 
-        let update = |ctx: &mut dyn KernelCtx, load: bool| {
-            for j in 0..n {
-                let addr = tmp[j / 3];
-                let (index, scale) = match j % 3 {
-                    0 => (None, 0),
-                    1 => (Some(DST_CS), 1),
-                    2 => (Some(DST_CS), 2),
-                    _ => unreachable!(),
+        ctx.branch_bit(
+            1,
+            5,
+            FLAGS,
+            &mut |ctx| {
+                // gather-scatter
+            },
+            &mut |ctx| {
+                let dst_cs = Reg::R14;
+
+                ctx.push(IDX_I);
+                ctx.push(IDX_J);
+                ctx.push(DST_PTR);
+                ctx.push(dst_cs);
+
+                ctx.writeln(&format!("mov {dst_cs}, qword ptr [{DST_PTR} + 8]"));
+                ctx.writeln(&format!("mov {DST_PTR}, qword ptr [{DST_PTR}]"));
+
+                let size = ctx.unit_size() * if ctx.is_cplx() { 2 } else { 1 };
+                ctx.writeln(&format!("shl {IDX_I}, {}", size.ilog2()));
+                ctx.writeln(&format!("imul {IDX_J}, {}", dst_cs));
+
+                ctx.add(DST_PTR, IDX_I);
+                ctx.add(DST_PTR, IDX_J);
+
+                let update = |ctx: &mut dyn KernelCtx, load: bool| {
+                    for j in 0..n {
+                        let addr = DST_PTR;
+
+                        for i in 0..m {
+                            let offset = ctx.reg_size() * i as i32;
+
+                            let mem = Mem {
+                                addr,
+                                index: None,
+                                scale: 0,
+                                offset,
+                            };
+
+                            if load {
+                                if use_top_mask && i == 0 {
+                                    ctx.vmaskload(top_mask, dst, mem);
+                                } else if use_bot_mask && i + 1 == m {
+                                    ctx.vmaskload(bot_mask, dst, mem);
+                                } else {
+                                    ctx.vload(dst, mem);
+                                }
+                                if ctx.is_cplx() {
+                                    ctx.vadd(dst, dst, i + m * j);
+                                } else {
+                                    ctx.vfmadd(dst, i + m * j, alpha);
+                                }
+                            } else if !ctx.is_cplx() {
+                                ctx.vmul(dst, i + m * j, alpha);
+                            } else {
+                                ctx.vmov(dst, i + m * j);
+                            }
+
+                            if use_top_mask && i == 0 {
+                                ctx.vmaskstore(top_mask, mem, dst);
+                            } else if use_bot_mask && i + 1 == m {
+                                ctx.vmaskstore(bot_mask, mem, dst);
+                            } else {
+                                ctx.vstore(mem, dst);
+                            }
+                        }
+                        ctx.add(DST_PTR, dst_cs);
+                    }
                 };
 
-                for i in 0..m {
-                    let offset = ctx.reg_size() * i as i32;
-
-                    let mem = Mem {
-                        addr,
-                        index,
-                        scale,
-                        offset,
-                    };
-
-                    if load {
-                        if use_top_mask && i == 0 {
-                            ctx.vmaskload(top_mask, dst, mem);
-                        } else if use_bot_mask && i + 1 == m {
-                            ctx.vmaskload(bot_mask, dst, mem);
-                        } else {
-                            ctx.vload(dst, mem);
-                        }
-                        if ctx.is_cplx() {
-                            ctx.vadd(dst, dst, i + m * j);
-                        } else {
-                            ctx.vfmadd(dst, i + m * j, alpha);
-                        }
-                    } else if !ctx.is_cplx() {
-                        ctx.vmul(dst, i + m * j, alpha);
-                    } else {
-                        ctx.vmov(dst, i + m * j);
-                    }
-
-                    if use_top_mask && i == 0 {
-                        ctx.vmaskstore(top_mask, mem, dst);
-                    } else if use_bot_mask && i + 1 == m {
-                        ctx.vmaskstore(bot_mask, mem, dst);
-                    } else {
-                        ctx.vstore(mem, dst);
-                    }
-                }
-            }
-        };
-
-        ctx.branch_bit(
-            1, //
-            0,
-            FLAGS,
-            &mut |ctx| update(ctx, true),
-            &mut |ctx| update(ctx, false),
+                ctx.branch_bit(
+                    1, //
+                    0,
+                    FLAGS,
+                    &mut |ctx| update(ctx, true),
+                    &mut |ctx| update(ctx, false),
+                );
+                ctx.pop(dst_cs);
+                ctx.pop(DST_PTR);
+                ctx.pop(IDX_J);
+                ctx.pop(IDX_I);
+            },
         );
 
         ctx.pop(RHS_PTR);
         ctx.pop(LHS_PTR);
         ctx.pop(DEPTH);
-        ctx.pop(tmp1);
-        ctx.pop(tmp0);
     }
 
     pub fn hkernel(ctx: &mut dyn KernelCtx, m: usize, n: usize, triu: bool) {
@@ -992,18 +1015,16 @@ pub mod x86_64 {
         assert!(m <= 4);
         assert!(m * n + m + 4 < ctx.n_regs());
 
-        let tmp0 = Reg::R13;
-        let tmp1 = Reg::R14;
-
-        ctx.push(tmp0);
-        ctx.push(tmp1);
         ctx.push(DEPTH);
         ctx.push(LHS_PTR);
         ctx.push(RHS_PTR);
         ctx.push(LHS_CS);
 
-        let tmp_lhs = &[LHS_PTR, tmp0];
-        let tmp_rhs = &[RHS_PTR, tmp1];
+        ctx.push(IDX_I);
+        ctx.push(IDX_J);
+
+        let tmp_lhs = &[LHS_PTR, IDX_I];
+        let tmp_rhs = &[RHS_PTR, IDX_J];
         let tmp_lhs = &tmp_lhs[..1 + (m - 1) / 2];
         let tmp_rhs = &tmp_rhs[..1 + (n - 1) / 2];
 
@@ -1292,21 +1313,10 @@ pub mod x86_64 {
             body(ctx, false);
         }
 
-        let tmp = [DST_PTR, LHS_PTR, RHS_PTR, tmp0];
-        setup_cs(ctx, &tmp[..tmp_lhs.len()], HORIZONTAL_DST_RS);
-        for i in 0..tmp_lhs.len() {
-            let tmp = [tmp[i], tmp[i + 2]];
-            setup_cs(ctx, &tmp[..tmp_rhs.len()], DST_CS);
-        }
-        ctx.lea(
-            LHS_CS,
-            Mem {
-                addr: DST_CS,
-                index: Some(HORIZONTAL_DST_RS),
-                scale: 1,
-                offset: 0,
-            },
-        );
+        let tmp = [DST_PTR, LHS_PTR, RHS_PTR, DEPTH];
+
+        ctx.pop(IDX_J);
+        ctx.pop(IDX_I);
 
         let alpha = m * n;
         let alpha_imag = m * n + 1;
@@ -1353,61 +1363,97 @@ pub mod x86_64 {
             }
         }
 
-        let update = |ctx: &mut dyn KernelCtx, load: bool| {
-            for j in 0..n {
-                let m = if triu { j + 1 } else { m };
-                for i in 0..m {
-                    let addr = tmp[i / 2 + 2 * (j / 2)];
-                    let (index, scale) = match (i % 2, j % 2) {
-                        (0, 0) => (None, 0),
-                        (1, 0) => (Some(HORIZONTAL_DST_RS), 1),
-                        (0, 1) => (Some(DST_CS), 1),
-                        (1, 1) => (Some(LHS_CS), 1),
-                        _ => unreachable!(),
-                    };
-                    let mem = Mem {
-                        addr,
-                        index,
-                        scale,
-                        offset: 0,
-                    };
-
-                    let instr = match (ctx.is_cplx(), ctx.unit_size()) {
-                        (false, 4) => "vmovss",
-                        (false, 8) => "vmovsd",
-                        (true, 4) => "vmovsd",
-                        (true, 8) => "vmovupd",
-                        _ => unreachable!(),
-                    };
-
-                    if load {
-                        ctx.writeln(&format!("{instr} xmm{dst}, {mem}"));
-                        ctx.vload(dst, mem);
-                        ctx.vadd(dst, dst, i + m * j);
-                    } else {
-                        ctx.vmov(dst, i + m * j);
-                    }
-
-                    ctx.vreduce(dst, i + m * j);
-                    ctx.writeln(&format!("{instr} {mem}, xmm{dst}"));
-                }
-            }
-        };
-
         ctx.branch_bit(
-            1, //
-            0,
+            1,
+            5,
             FLAGS,
-            &mut |ctx| update(ctx, true),
-            &mut |ctx| update(ctx, false),
+            &mut |ctx| {
+                // gather-scatter
+            },
+            &mut |ctx| {
+                ctx.push(IDX_I);
+                ctx.push(IDX_J);
+
+                let dst_rs = Reg::Rcx;
+                let dst_cs = Reg::R14;
+                ctx.push(DST_PTR);
+                ctx.push(dst_rs);
+                ctx.push(dst_cs);
+                ctx.writeln(&format!("mov {dst_rs}, qword ptr [{DST_PTR} + 16]"));
+                ctx.writeln(&format!("mov {dst_cs}, qword ptr [{DST_PTR} + 8]"));
+                ctx.writeln(&format!("mov {DST_PTR}, qword ptr [{DST_PTR}]"));
+
+                ctx.writeln(&format!("imul {IDX_I}, {}", dst_rs));
+                ctx.writeln(&format!("imul {IDX_J}, {}", dst_cs));
+
+                ctx.add(DST_PTR, IDX_I);
+                ctx.add(DST_PTR, IDX_J);
+
+                let tmp = &tmp[..tmp_lhs.len()];
+                setup_cs(ctx, tmp, dst_rs);
+
+                let update = |ctx: &mut dyn KernelCtx, load: bool| {
+                    for j in 0..n {
+                        let m = if triu { j + 1 } else { m };
+                        for i in 0..m {
+                            let addr = tmp[i / 2];
+                            let (index, scale) = match i % 2 {
+                                0 => (None, 0),
+                                1 => (Some(dst_rs), 1),
+                                _ => unreachable!(),
+                            };
+                            let mem = Mem {
+                                addr,
+                                index,
+                                scale,
+                                offset: 0,
+                            };
+
+                            let instr = match (ctx.is_cplx(), ctx.unit_size()) {
+                                (false, 4) => "vmovss",
+                                (false, 8) => "vmovsd",
+                                (true, 4) => "vmovsd",
+                                (true, 8) => "vmovupd",
+                                _ => unreachable!(),
+                            };
+
+                            if load {
+                                ctx.writeln(&format!("{instr} xmm{dst}, {mem}"));
+                                ctx.vload(dst, mem);
+                                ctx.vadd(dst, dst, i + m * j);
+                            } else {
+                                ctx.vmov(dst, i + m * j);
+                            }
+
+                            ctx.vreduce(dst, i + m * j);
+                            ctx.writeln(&format!("{instr} {mem}, xmm{dst}"));
+                        }
+                        for &tmp in tmp {
+                            ctx.add(tmp, dst_cs);
+                        }
+                    }
+                };
+
+                ctx.branch_bit(
+                    1, //
+                    0,
+                    FLAGS,
+                    &mut |ctx| update(ctx, true),
+                    &mut |ctx| update(ctx, false),
+                );
+                ctx.pop(dst_cs);
+                ctx.pop(dst_rs);
+                ctx.pop(DST_PTR);
+
+                ctx.pop(IDX_J);
+                ctx.pop(IDX_I);
+            },
         );
 
         ctx.pop(LHS_CS);
         ctx.pop(RHS_PTR);
         ctx.pop(LHS_PTR);
         ctx.pop(DEPTH);
-        ctx.pop(tmp1);
-        ctx.pop(tmp0);
         ctx.vzeroupper();
         ctx.ret();
     }

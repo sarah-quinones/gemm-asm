@@ -2,6 +2,7 @@ use aligned_vec::avec;
 use blocking::Shape;
 use diol::prelude::*;
 use gemm_asm::*;
+use millikernel::ColMajorDstData;
 
 fn gemm_asm(bencher: Bencher, (m, n): (usize, usize)) {
     let k = 4;
@@ -24,14 +25,16 @@ fn gemm_asm(bencher: Bencher, (m, n): (usize, usize)) {
             (m * size_of::<f64>()) as isize,
             (size_of::<f64>()) as isize,
             (k * size_of::<f64>()) as isize,
-            (m * size_of::<f64>()) as isize,
-            (plan.mr * size_of::<f64>()) as isize,
-            (plan.nr * m * size_of::<f64>()) as isize,
+            0,
+            0,
             (plan.mr * size_of::<f64>()) as isize,
             (plan.nr * k * size_of::<f64>()) as isize,
             lhs.as_ptr() as _,
             rhs.as_ptr() as _,
-            dst.as_mut_ptr() as _,
+            &raw const *&ColMajorDstData {
+                ptr: dst.as_mut_ptr() as _,
+                col_stride: (m * size_of::<f64>()) as isize,
+            } as *mut _,
             core::ptr::from_ref(&1.0) as _,
         )
     });
@@ -169,7 +172,10 @@ fn big_gemm_asm(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
             },
             &Shape { m, n, k },
             &plan,
-            dst.as_mut_ptr() as _,
+            &raw const *&ColMajorDstData {
+                ptr: dst.as_mut_ptr() as _,
+                col_stride: (m * size_of::<f64>()) as isize,
+            } as *mut _,
             if pack_lhs {
                 packed_lhs.as_ptr()
             } else {
@@ -181,8 +187,6 @@ fn big_gemm_asm(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
                 unpacked_rhs.as_ptr()
             } as _,
             core::ptr::from_ref(&1.0f64) as _,
-            size_of::<f64>() as isize,
-            (m * size_of::<f64>()) as isize,
             if pack_lhs {
                 (mr * size_of::<f64>()) as isize
             } else {
@@ -220,10 +224,6 @@ fn big_gemm_asm(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
             },
         );
     };
-    // let mut f = f;
-    // for _ in 0..10 {
-    //     f();
-    // }
     bencher.bench(f);
 }
 
@@ -255,10 +255,6 @@ fn big_gemm_old(bencher: Bencher, (m, n, k): (usize, usize, usize)) {
             gemm::Parallelism::None,
         );
     };
-    // let mut f = f;
-    // for _ in 0..10 {
-    //     f();
-    // }
     bencher.bench(f);
 }
 

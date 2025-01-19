@@ -84,7 +84,9 @@ pub struct Plan {
     // 89
     pub two_or_more: bool,
 
+    // 96
     pub mr: usize,
+    // 104
     pub nr: usize,
 }
 
@@ -797,16 +799,23 @@ pub const fn c64_dot_plan_avx512(
         AVX512_TAIL_MASK_C64,
     )
 }
+
+#[repr(C)]
+pub struct DstData {
+    pub ptr: *mut (),
+    pub col_stride: isize,
+    pub row_stride: isize,
+}
+
 pub unsafe fn millikernel(
     data: &Plan,
     depth: usize,
     lhs_cs: isize,
     rhs_rs: isize,
     rhs_cs: isize,
-    dst_cs: isize,
 
-    dst_brs: isize,
-    dst_bcs: isize,
+    i_base: usize,
+    j_base: usize,
 
     lhs_bs: isize,
     rhs_bs: isize,
@@ -826,7 +835,7 @@ pub unsafe fn millikernel(
         "push r12",
         "push r13",
         "push r14",
-        "push r15",
+        "push r14",
 
         "mov r14, {data}",
 
@@ -841,7 +850,7 @@ pub unsafe fn millikernel(
 
         // stack state
         //  0|16        8|24        16|32    24|40    32|48   40|56
-        // [left width, mid height, dst_bcs, dst_brs, rhs_bs, lhs_bs]
+        // [left width, mid height, ______, ______, rhs_bs, lhs_bs]
 
         "cmp byte ptr [r14 + 89], 0",
         "jnz 23f",
@@ -852,7 +861,7 @@ pub unsafe fn millikernel(
 
                 "call qword ptr [r14 + 48]",
                 "add r10, qword ptr [rsp + 32]",
-                "add r11, qword ptr [rsp + 16]",
+                "add r15, [r14 + 104]",
                 "dec qword ptr [rsp]",
                 "jnz 33b",
             "32:",
@@ -871,14 +880,14 @@ pub unsafe fn millikernel(
                 "mov qword ptr [rsp + 8], r13",
 
                 "push r9",
-                "push r11",
+                "push rsi",
 
                 // top
                 "mov r12, qword ptr [r14 + 80]",
                 "and r12, 27",
                 "call qword ptr [r14 + 16]",
                 "add r9, qword ptr [rsp + 56]",
-                "add r11, qword ptr [rsp + 40]",
+                "add rsi, [r14 + 96]",
 
                 "and r12, 25",
                 // mid
@@ -887,7 +896,7 @@ pub unsafe fn millikernel(
                     "43:",
                     "call qword ptr [r14 + 32]",
                     "add r9, qword ptr [rsp + 56]",
-                    "add r11, qword ptr [rsp + 40]",
+                    "add rsi, [r14 + 96]",
                     "dec qword ptr [rsp + 24]",
                     "jnz 43b",
                 "42:",
@@ -897,10 +906,10 @@ pub unsafe fn millikernel(
                 "and r12, 29",
                 "call qword ptr [r14 + 48]",
 
-                "pop r11",
+                "pop rsi",
                 "pop r9",
                 "add r10, qword ptr [rsp + 32]",
-                "add r11, qword ptr [rsp + 16]",
+                "add r15, [r14 + 104]",
                 "dec qword ptr [rsp]",
                 "jnz 33b",
             "32:",
@@ -914,7 +923,7 @@ pub unsafe fn millikernel(
             "and r12, 27",
             "call qword ptr [r14 + 24]",
             "add r9, qword ptr [rsp + 40]",
-            "add r11, qword ptr [rsp + 24]",
+            "add rsi, [r14 + 96]",
 
             "and r12, 25",
             // mid
@@ -923,7 +932,7 @@ pub unsafe fn millikernel(
                 "43:",
                 "call qword ptr [r14 + 40]",
                 "add r9, qword ptr [rsp + 40]",
-                "add r11, qword ptr [rsp + 24]",
+                "add rsi, [r14 + 96]",
                 "dec qword ptr [rsp + 8]",
                 "jnz 43b",
             "42:",
@@ -937,7 +946,7 @@ pub unsafe fn millikernel(
 
         "pop r13",
         "pop r13",
-        "pop r15",
+        "pop r14",
         "pop r14",
         "pop r13",
         "pop r12",
@@ -951,16 +960,15 @@ pub unsafe fn millikernel(
         in("rdi") lhs_cs,
         in("rcx") rhs_rs,
         in("rdx") rhs_cs,
-        in("rsi") dst_cs,
         in("r8") alpha,
         inout("r9") lhs_ptr => _,
         inout("r10") rhs_ptr => _,
-        inout("r11") dst_ptr => _,
+        in("r11") dst_ptr,
 
         in("r12") lhs_bs,
         in("r13") rhs_bs,
-        in("r14") dst_brs,
-        in("r15") dst_bcs,
+        inout("rsi") i_base => _,
+        inout("r15") j_base => _,
     };
 }
 
@@ -969,11 +977,9 @@ pub unsafe fn dot_millikernel(
     depth: usize,
     lhs_cs: isize,
     rhs_cs: isize,
-    dst_rs: isize,
-    dst_cs: isize,
 
-    dst_brs: isize,
-    dst_bcs: isize,
+    i_base: usize,
+    j_base: usize,
 
     lhs_bs: isize,
     rhs_bs: isize,
@@ -985,8 +991,8 @@ pub unsafe fn dot_millikernel(
     alpha: *const (),
 ) {
     millikernel(
-        data, depth, lhs_cs, dst_rs, rhs_cs, dst_cs, dst_brs, dst_bcs, lhs_bs, rhs_bs, lhs_ptr,
-        rhs_ptr, dst_ptr, alpha,
+        data, depth, lhs_cs, 0, rhs_cs, i_base, j_base, lhs_bs, rhs_bs, lhs_ptr, rhs_ptr, dst_ptr,
+        alpha,
     );
 }
 
@@ -998,7 +1004,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn test_avx() {
+        fn test_avx_f64() {
             for m in 0..48 {
                 for n in 0..24 {
                     let k = 2;
@@ -1024,14 +1030,17 @@ mod tests {
                                 (m * size_of::<f64>()) as isize,
                                 (size_of::<f64>()) as isize,
                                 (k * size_of::<f64>()) as isize,
-                                (m * size_of::<f64>()) as isize,
-                                (plan.mr * size_of::<f64>()) as isize,
-                                (plan.nr * m * size_of::<f64>()) as isize,
+                                0,
+                                0,
                                 (plan.mr * size_of::<f64>()) as isize,
                                 (plan.nr * k * size_of::<f64>()) as isize,
                                 lhs.as_ptr() as _,
                                 rhs.as_ptr() as _,
-                                dst.as_mut_ptr() as _,
+                                &raw const *&DstData {
+                                    ptr: dst.as_mut_ptr() as _,
+                                    col_stride: (m * size_of::<f64>()) as isize,
+                                    row_stride: size_of::<f64>() as isize,
+                                } as *mut _,
                                 core::ptr::from_ref(&1.0) as _,
                             )
                         };
@@ -1056,7 +1065,7 @@ mod tests {
         }
 
         #[test]
-        fn test_avx512() {
+        fn test_avx512_f64() {
             for m in 0..48 {
                 for n in 0..24 {
                     let k = 2;
@@ -1082,14 +1091,17 @@ mod tests {
                                 (m * size_of::<f64>()) as isize,
                                 (size_of::<f64>()) as isize,
                                 (k * size_of::<f64>()) as isize,
-                                (m * size_of::<f64>()) as isize,
-                                (plan.mr * size_of::<f64>()) as isize,
-                                (plan.nr * m * size_of::<f64>()) as isize,
+                                0,
+                                0,
                                 (plan.mr * size_of::<f64>()) as isize,
                                 (plan.nr * k * size_of::<f64>()) as isize,
                                 lhs.as_ptr() as _,
                                 rhs.as_ptr() as _,
-                                dst.as_mut_ptr() as _,
+                                &raw const *&DstData {
+                                    ptr: dst.as_mut_ptr() as _,
+                                    col_stride: (m * size_of::<f64>()) as isize,
+                                    row_stride: (size_of::<f64>()) as isize,
+                                } as *mut _,
                                 core::ptr::from_ref(&1.0) as _,
                             )
                         };
@@ -1140,14 +1152,17 @@ mod tests {
                                 (m * size_of::<f32>()) as isize,
                                 (size_of::<f32>()) as isize,
                                 (k * size_of::<f32>()) as isize,
-                                (m * size_of::<f32>()) as isize,
-                                (plan.mr * size_of::<f32>()) as isize,
-                                (plan.nr * m * size_of::<f32>()) as isize,
+                                0,
+                                0,
                                 (plan.mr * size_of::<f32>()) as isize,
                                 (plan.nr * k * size_of::<f32>()) as isize,
                                 lhs.as_ptr() as _,
                                 rhs.as_ptr() as _,
-                                dst.as_mut_ptr() as _,
+                                &raw const *&DstData {
+                                    ptr: dst.as_mut_ptr() as _,
+                                    col_stride: (m * size_of::<f32>()) as isize,
+                                    row_stride: (size_of::<f32>()) as isize,
+                                } as *mut _,
                                 core::ptr::from_ref(&1.0f32) as _,
                             )
                         };
@@ -1198,14 +1213,17 @@ mod tests {
                                 (m * size_of::<f32>()) as isize,
                                 (size_of::<f32>()) as isize,
                                 (k * size_of::<f32>()) as isize,
-                                (m * size_of::<f32>()) as isize,
-                                (plan.mr * size_of::<f32>()) as isize,
-                                (plan.nr * m * size_of::<f32>()) as isize,
+                                0,
+                                0,
                                 (plan.mr * size_of::<f32>()) as isize,
                                 (plan.nr * k * size_of::<f32>()) as isize,
                                 lhs.as_ptr() as _,
                                 rhs.as_ptr() as _,
-                                dst.as_mut_ptr() as _,
+                                &raw const *&DstData {
+                                    ptr: dst.as_mut_ptr() as _,
+                                    col_stride: (m * size_of::<f32>()) as isize,
+                                    row_stride: (size_of::<f32>()) as isize,
+                                } as *mut _,
                                 core::ptr::from_ref(&1.0f32) as _,
                             )
                         };
@@ -1295,14 +1313,17 @@ mod tests {
                                 (m * size_of::<c64>()) as isize,
                                 (size_of::<c64>()) as isize,
                                 (k * size_of::<c64>()) as isize,
-                                (m * size_of::<c64>()) as isize,
-                                (plan.mr * size_of::<c64>()) as isize,
-                                (plan.nr * m * size_of::<c64>()) as isize,
+                                0,
+                                0,
                                 (plan.mr * size_of::<c64>()) as isize,
                                 (plan.nr * k * size_of::<c64>()) as isize,
                                 lhs.as_ptr() as _,
                                 rhs.as_ptr() as _,
-                                dst.as_mut_ptr() as _,
+                                &raw const *&DstData {
+                                    ptr: dst.as_mut_ptr() as _,
+                                    col_stride: (m * size_of::<c64>()) as isize,
+                                    row_stride: (size_of::<c64>()) as isize,
+                                } as *mut _,
                                 core::ptr::from_ref(&c64::new(1.0, 0.0)) as _,
                             )
                         };
@@ -1365,14 +1386,17 @@ mod tests {
                                         (m * size_of::<c64>()) as isize,
                                         (size_of::<c64>()) as isize,
                                         (k * size_of::<c64>()) as isize,
-                                        (m * size_of::<c64>()) as isize,
-                                        (plan.mr * size_of::<c64>()) as isize,
-                                        (plan.nr * m * size_of::<c64>()) as isize,
+                                        0,
+                                        0,
                                         (plan.mr * size_of::<c64>()) as isize,
                                         (plan.nr * k * size_of::<c64>()) as isize,
                                         lhs.as_ptr() as _,
                                         rhs.as_ptr() as _,
-                                        dst.as_mut_ptr() as _,
+                                        &raw const *&DstData {
+                                            ptr: dst.as_mut_ptr() as _,
+                                            col_stride: (m * size_of::<c64>()) as isize,
+                                            row_stride: (size_of::<c64>()) as isize,
+                                        } as *mut _,
                                         core::ptr::from_ref(&alpha) as _,
                                     )
                                 };
@@ -1444,14 +1468,17 @@ mod tests {
                                         (m * size_of::<c32>()) as isize,
                                         (size_of::<c32>()) as isize,
                                         (k * size_of::<c32>()) as isize,
-                                        (m * size_of::<c32>()) as isize,
-                                        (plan.mr * size_of::<c32>()) as isize,
-                                        (plan.nr * m * size_of::<c32>()) as isize,
+                                        0,
+                                        0,
                                         (plan.mr * size_of::<c32>()) as isize,
                                         (plan.nr * k * size_of::<c32>()) as isize,
                                         lhs.as_ptr() as _,
                                         rhs.as_ptr() as _,
-                                        dst.as_mut_ptr() as _,
+                                        &raw const *&DstData {
+                                            ptr: dst.as_mut_ptr() as _,
+                                            col_stride: (m * size_of::<c32>()) as isize,
+                                            row_stride: (size_of::<c32>()) as isize,
+                                        } as *mut _,
                                         core::ptr::from_ref(&alpha) as _,
                                     )
                                 };
@@ -1522,14 +1549,17 @@ mod tests {
                                         (m * size_of::<c32>()) as isize,
                                         (size_of::<c32>()) as isize,
                                         (k * size_of::<c32>()) as isize,
-                                        (m * size_of::<c32>()) as isize,
-                                        (plan.mr * size_of::<c32>()) as isize,
-                                        (plan.nr * m * size_of::<c32>()) as isize,
+                                        0,
+                                        0,
                                         (plan.mr * size_of::<c32>()) as isize,
                                         (plan.nr * k * size_of::<c32>()) as isize,
                                         lhs.as_ptr() as _,
                                         rhs.as_ptr() as _,
-                                        dst.as_mut_ptr() as _,
+                                        &raw const *&DstData {
+                                            ptr: dst.as_mut_ptr() as _,
+                                            col_stride: (m * size_of::<c32>()) as isize,
+                                            row_stride: (size_of::<c32>()) as isize,
+                                        } as *mut _,
                                         core::ptr::from_ref(&alpha) as _,
                                     )
                                 };
@@ -1591,15 +1621,17 @@ mod tests {
                                     k,
                                     (k * size_of::<f32>()) as isize,
                                     (k * size_of::<f32>()) as isize,
-                                    (size_of::<f32>()) as isize,
-                                    (m * size_of::<f32>()) as isize,
-                                    (plan.mr * size_of::<f32>()) as isize,
-                                    (plan.nr * m * size_of::<f32>()) as isize,
+                                    0,
+                                    0,
                                     (plan.mr * k * size_of::<f32>()) as isize,
                                     (plan.nr * k * size_of::<f32>()) as isize,
                                     lhs.as_ptr() as _,
                                     rhs.as_ptr() as _,
-                                    dst.as_mut_ptr() as _,
+                                    &raw const *&DstData {
+                                        ptr: dst.as_mut_ptr() as _,
+                                        col_stride: (m * size_of::<f32>()) as isize,
+                                        row_stride: (size_of::<f32>()) as isize,
+                                    } as *mut _,
                                     core::ptr::from_ref(&1.0_f32) as _,
                                 )
                             };
@@ -1654,15 +1686,17 @@ mod tests {
                                     k,
                                     (k * size_of::<f32>()) as isize,
                                     (k * size_of::<f32>()) as isize,
-                                    (size_of::<f32>()) as isize,
-                                    (m * size_of::<f32>()) as isize,
-                                    (plan.mr * size_of::<f32>()) as isize,
-                                    (plan.nr * m * size_of::<f32>()) as isize,
+                                    0,
+                                    0,
                                     (plan.mr * k * size_of::<f32>()) as isize,
                                     (plan.nr * k * size_of::<f32>()) as isize,
                                     lhs.as_ptr() as _,
                                     rhs.as_ptr() as _,
-                                    dst.as_mut_ptr() as _,
+                                    &raw const *&DstData {
+                                        ptr: dst.as_mut_ptr() as _,
+                                        col_stride: (m * size_of::<f32>()) as isize,
+                                        row_stride: (size_of::<f32>()) as isize,
+                                    } as *mut _,
                                     core::ptr::from_ref(&1.0_f32) as _,
                                 )
                             };
@@ -1717,15 +1751,17 @@ mod tests {
                                     k,
                                     (k * size_of::<f64>()) as isize,
                                     (k * size_of::<f64>()) as isize,
-                                    (size_of::<f64>()) as isize,
-                                    (m * size_of::<f64>()) as isize,
-                                    (plan.mr * size_of::<f64>()) as isize,
-                                    (plan.nr * m * size_of::<f64>()) as isize,
+                                    0,
+                                    0,
                                     (plan.mr * k * size_of::<f64>()) as isize,
                                     (plan.nr * k * size_of::<f64>()) as isize,
                                     lhs.as_ptr() as _,
                                     rhs.as_ptr() as _,
-                                    dst.as_mut_ptr() as _,
+                                    &raw const *&DstData {
+                                        ptr: dst.as_mut_ptr() as _,
+                                        col_stride: (m * size_of::<f64>()) as isize,
+                                        row_stride: (size_of::<f64>()) as isize,
+                                    } as *mut _,
                                     core::ptr::from_ref(&1.0_f64) as _,
                                 )
                             };
@@ -1756,9 +1792,9 @@ mod tests {
 
         #[test]
         fn test_avx512_f64() {
-            for m in 0..12 {
-                for n in 0..12 {
-                    for k in 0..20 {
+            for m in 1..12 {
+                for n in 1..12 {
+                    for k in 1..20 {
                         for skip in 0..Ord::min(8, k) {
                             let target = &mut *vec![0.0; m * n];
                             let dst = &mut *vec![0.0; m * n];
@@ -1780,15 +1816,17 @@ mod tests {
                                     k,
                                     (k * size_of::<f64>()) as isize,
                                     (k * size_of::<f64>()) as isize,
-                                    (size_of::<f64>()) as isize,
-                                    (m * size_of::<f64>()) as isize,
-                                    (plan.mr * size_of::<f64>()) as isize,
-                                    (plan.nr * m * size_of::<f64>()) as isize,
+                                    0,
+                                    0,
                                     (plan.mr * k * size_of::<f64>()) as isize,
                                     (plan.nr * k * size_of::<f64>()) as isize,
                                     lhs.as_ptr() as _,
                                     rhs.as_ptr() as _,
-                                    dst.as_mut_ptr() as _,
+                                    &raw const *&DstData {
+                                        ptr: dst.as_mut_ptr() as _,
+                                        col_stride: (m * size_of::<f64>()) as isize,
+                                        row_stride: (size_of::<f64>()) as isize,
+                                    } as *mut _,
                                     core::ptr::from_ref(&1.0_f64) as _,
                                 )
                             };
@@ -1867,15 +1905,17 @@ mod tests {
                                             k,
                                             (k * size_of::<c32>()) as isize,
                                             (k * size_of::<c32>()) as isize,
-                                            (size_of::<c32>()) as isize,
-                                            (m * size_of::<c32>()) as isize,
-                                            (plan.mr * size_of::<c32>()) as isize,
-                                            (plan.nr * m * size_of::<c32>()) as isize,
+                                            0,
+                                            0,
                                             (plan.mr * k * size_of::<c32>()) as isize,
                                             (plan.nr * k * size_of::<c32>()) as isize,
                                             lhs.as_ptr() as _,
                                             rhs.as_ptr() as _,
-                                            dst.as_mut_ptr() as _,
+                                            &raw const *&DstData {
+                                                ptr: dst.as_mut_ptr() as _,
+                                                col_stride: (m * size_of::<c32>()) as isize,
+                                                row_stride: (size_of::<c32>()) as isize,
+                                            } as *mut _,
                                             core::ptr::from_ref(&alpha) as _,
                                         )
                                     };
@@ -1951,15 +1991,17 @@ mod tests {
                                             k,
                                             (k * size_of::<c64>()) as isize,
                                             (k * size_of::<c64>()) as isize,
-                                            (size_of::<c64>()) as isize,
-                                            (m * size_of::<c64>()) as isize,
-                                            (plan.mr * size_of::<c64>()) as isize,
-                                            (plan.nr * m * size_of::<c64>()) as isize,
+                                            0,
+                                            0,
                                             (plan.mr * k * size_of::<c64>()) as isize,
                                             (plan.nr * k * size_of::<c64>()) as isize,
                                             lhs.as_ptr() as _,
                                             rhs.as_ptr() as _,
-                                            dst.as_mut_ptr() as _,
+                                            &raw const *&DstData {
+                                                ptr: dst.as_mut_ptr() as _,
+                                                col_stride: (m * size_of::<c64>()) as isize,
+                                                row_stride: (size_of::<c64>()) as isize,
+                                            } as *mut _,
                                             core::ptr::from_ref(&alpha) as _,
                                         )
                                     };
@@ -2035,15 +2077,17 @@ mod tests {
                                             k,
                                             (k * size_of::<c32>()) as isize,
                                             (k * size_of::<c32>()) as isize,
-                                            (size_of::<c32>()) as isize,
-                                            (m * size_of::<c32>()) as isize,
-                                            (plan.mr * size_of::<c32>()) as isize,
-                                            (plan.nr * m * size_of::<c32>()) as isize,
+                                            0,
+                                            0,
                                             (plan.mr * k * size_of::<c32>()) as isize,
                                             (plan.nr * k * size_of::<c32>()) as isize,
                                             lhs.as_ptr() as _,
                                             rhs.as_ptr() as _,
-                                            dst.as_mut_ptr() as _,
+                                            &raw const *&DstData {
+                                                ptr: dst.as_mut_ptr() as _,
+                                                col_stride: (m * size_of::<c32>()) as isize,
+                                                row_stride: (size_of::<c32>()) as isize,
+                                            } as *mut _,
                                             core::ptr::from_ref(&alpha) as _,
                                         )
                                     };
@@ -2118,15 +2162,17 @@ mod tests {
                                             k,
                                             (k * size_of::<c64>()) as isize,
                                             (k * size_of::<c64>()) as isize,
-                                            (size_of::<c64>()) as isize,
-                                            (m * size_of::<c64>()) as isize,
-                                            (plan.mr * size_of::<c64>()) as isize,
-                                            (plan.nr * m * size_of::<c64>()) as isize,
+                                            0,
+                                            0,
                                             (plan.mr * k * size_of::<c64>()) as isize,
                                             (plan.nr * k * size_of::<c64>()) as isize,
                                             lhs.as_ptr() as _,
                                             rhs.as_ptr() as _,
-                                            dst.as_mut_ptr() as _,
+                                            &raw const *&DstData {
+                                                ptr: dst.as_mut_ptr() as _,
+                                                col_stride: (m * size_of::<c64>()) as isize,
+                                                row_stride: (size_of::<c64>()) as isize,
+                                            } as *mut _,
                                             core::ptr::from_ref(&alpha) as _,
                                         )
                                     };

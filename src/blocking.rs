@@ -65,9 +65,6 @@ pub unsafe fn blocking(
     rhs: *const (),
     alpha: *const (),
 
-    dst_rs: isize,
-    dst_cs: isize,
-
     lhs_cs: isize,
     lhs_inner_rs: isize,
     lhs_outer_cs: isize,
@@ -121,8 +118,6 @@ pub unsafe fn blocking(
             rhs_rs,
             rhs_cs,
             rhs_inner_cs,
-            dst_rs,
-            dst_cs,
             rhs_stride,
             top_r,
             mid_r,
@@ -158,15 +153,12 @@ unsafe fn blocking_rhs(
     rhs_rs: isize,
     rhs_cs: isize,
     rhs_inner_cs: isize,
-    dst_rs: isize,
-    dst_cs: isize,
     rhs_stride: isize,
     top_r: &Plan,
     mid_r: &Plan,
     bot_r: &Plan,
 ) {
     let mut rhs = rhs;
-    let mut dst = dst;
     let mut col = 0;
     while col < dim.n {
         let nc = Ord::min(outer_blocking.n, dim.n - col);
@@ -175,6 +167,7 @@ unsafe fn blocking_rhs(
         }
 
         blocking_lhs(
+            col,
             inner_blocking,
             outer_blocking,
             dim,
@@ -190,15 +183,13 @@ unsafe fn blocking_rhs(
             rhs_rs,
             rhs_cs,
             rhs_inner_cs,
-            dst_rs,
-            dst_cs,
         );
         rhs = rhs.wrapping_byte_offset(rhs_stride);
-        dst = dst.wrapping_byte_offset(nc as isize * dst_cs);
         col += nc;
     }
     if col < dim.n {
         blocking_lhs(
+            col,
             inner_blocking,
             outer_blocking,
             dim,
@@ -214,13 +205,12 @@ unsafe fn blocking_rhs(
             rhs_rs,
             rhs_cs,
             rhs_inner_cs,
-            dst_rs,
-            dst_cs,
         );
     }
 }
 
 unsafe fn blocking_lhs(
+    col: usize,
     inner_blocking: &Shape,
     outer_blocking: &Shape,
     dim: &Shape,
@@ -240,12 +230,8 @@ unsafe fn blocking_lhs(
     rhs_rs: isize,
     rhs_cs: isize,
     rhs_inner_cs: isize,
-
-    dst_rs: isize,
-    dst_cs: isize,
 ) {
     let mut lhs = lhs;
-    let mut dst = dst;
     let mut row = 0;
 
     let stride = lhs_inner_rs * (outer_blocking.m / inner_blocking.m) as isize;
@@ -258,9 +244,8 @@ unsafe fn blocking_lhs(
             lhs_cs,
             rhs_rs,
             rhs_cs,
-            dst_cs,
-            dst_rs * inner_blocking.m as isize,
-            dst_cs * inner_blocking.n as isize,
+            row,
+            col,
             lhs_inner_rs,
             rhs_inner_cs,
             lhs,
@@ -270,7 +255,6 @@ unsafe fn blocking_lhs(
         );
 
         lhs = lhs.wrapping_byte_offset(stride);
-        dst = dst.wrapping_byte_offset(mc as isize * dst_rs);
         row += mc;
     }
 
@@ -286,9 +270,8 @@ unsafe fn blocking_lhs(
             lhs_cs,
             rhs_rs,
             rhs_cs,
-            dst_cs,
-            dst_rs * inner_blocking.m as isize,
-            dst_cs * inner_blocking.n as isize,
+            row,
+            col,
             lhs_inner_rs,
             rhs_inner_cs,
             lhs,
@@ -298,7 +281,6 @@ unsafe fn blocking_lhs(
         );
 
         lhs = lhs.wrapping_byte_offset(stride);
-        dst = dst.wrapping_byte_offset(mc as isize * dst_rs);
         row += mc;
     }
 
@@ -309,9 +291,8 @@ unsafe fn blocking_lhs(
             lhs_cs,
             rhs_rs,
             rhs_cs,
-            dst_cs,
-            dst_rs * inner_blocking.m as isize,
-            dst_cs * inner_blocking.n as isize,
+            row,
+            col,
             lhs_inner_rs,
             rhs_inner_cs,
             lhs,
@@ -327,7 +308,7 @@ mod tests {
     use super::*;
     use crate::{
         cache,
-        millikernel::{self, Accum},
+        millikernel::{self, Accum, DstData},
         packing,
     };
     use aligned_vec::avec;
@@ -452,7 +433,11 @@ mod tests {
                             },
                             &Shape { m, n, k },
                             &plan,
-                            dst.as_mut_ptr() as _,
+                            &raw const *&DstData {
+                                ptr: dst.as_mut_ptr() as _,
+                                col_stride: (m * size_of::<f64>()) as isize,
+                                row_stride: size_of::<f64>() as isize,
+                            } as *mut _,
                             if pack_lhs {
                                 packed_lhs.as_ptr()
                             } else {
@@ -464,8 +449,6 @@ mod tests {
                                 unpacked_rhs.as_ptr()
                             } as _,
                             core::ptr::from_ref(&1.0f64) as _,
-                            size_of::<f64>() as isize,
-                            (m * size_of::<f64>()) as isize,
                             if pack_lhs {
                                 (mr * size_of::<f64>()) as isize
                             } else {
